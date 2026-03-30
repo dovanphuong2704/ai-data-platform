@@ -461,8 +461,7 @@ export default function ExplorerPage() {
       const conns = data.connections ?? [];
       setConnections(conns);
       // Handle is_default as boolean or string "true"/"false" from PostgreSQL
-      const isDefault = (c: DbConnection) =>
-        c.is_default === true || c.is_default === 'true' || c.is_default === 1;
+      const isDefault = (c: DbConnection) => c.is_default === true;
       const defaultConn = conns.find(isDefault);
       setSelectedConnectionId(defaultConn?.id ?? conns[0]?.id);
     } catch (err: unknown) {

@@ -233,8 +233,7 @@ export default function ChatPage() {
       const { data } = await apiClient.get<{ connections: DbConnection[] }>('/connections?withStatus=true');
       const conns = Array.isArray(data.connections) ? data.connections : [];
       setConnections(conns);
-      const isDefault = (c: DbConnection) =>
-        c.is_default === true || c.is_default === 'true' || c.is_default === 1;
+      const isDefault = (c: DbConnection) => c.is_default === true;
       const defaultConn = conns.find(isDefault);
       setSelectedConnectionId(defaultConn?.id ?? conns[0]?.id);
     } catch { /* silent */ }

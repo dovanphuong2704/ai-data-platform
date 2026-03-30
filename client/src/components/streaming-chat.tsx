@@ -227,17 +227,17 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
         finalAnalysisRef.current ||
         finalTokensRef.current ||
         finalStatusRef.current ||
-        (finalResultRef.current ? `Query returned ${finalResultRef.current.rowCount} row(s) in ${finalResultRef.current.duration_ms}ms` : '');
+        (finalResultRef.current ? `Query returned ${(finalResultRef.current as any).rowCount} row(s) in ${(finalResultRef.current as any).duration_ms}ms` : '');
 
       const assistantMsg: StreamMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: finalContent,
         sql: finalSqlRef.current || undefined,
-        columns: finalResultRef.current?.columns,
-        tableData: finalResultRef.current?.rows,
-        duration_ms: finalResultRef.current?.duration_ms,
-        rowCount: finalResultRef.current?.rowCount,
+        columns: (finalResultRef.current as any)?.columns,
+        tableData: (finalResultRef.current as any)?.rows,
+        duration_ms: (finalResultRef.current as any)?.duration_ms,
+        rowCount: (finalResultRef.current as any)?.rowCount,
         error: finalErrorRef.current || undefined,
       };
       setMessages(prev => [...prev, assistantMsg]);
