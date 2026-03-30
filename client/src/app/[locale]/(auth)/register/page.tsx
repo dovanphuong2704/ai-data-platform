@@ -5,10 +5,12 @@ import { useRouter } from '@/i18n/routing';
 import { Link } from '@/i18n/routing';
 import { apiClient } from '@/lib/api';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/components/auth-provider';
 
 export default function RegisterPage() {
   const t = useTranslations('auth.register');
   const router = useRouter();
+  const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -22,7 +24,7 @@ export default function RegisterPage() {
     try {
       await apiClient.post('/auth/register', { username, email, password });
       // Auto-login after registration
-      await apiClient.post('/auth/login', { email, password });
+      await login(email, password);
       router.push('/chat');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Registration failed.');

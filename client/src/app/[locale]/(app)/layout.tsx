@@ -14,13 +14,16 @@ import {
   Bookmark,
   Bell,
   Clock,
+  User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/components/auth-provider';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const t = useTranslations('nav');
+  const { user, logout } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const navItems = [
@@ -104,21 +107,35 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               {getPageTitle()}
             </h2>
           </div>
-          <button
-            onClick={async () => {
-              try {
-                const { apiClient } = await import('@/lib/api');
-                await apiClient.post('/auth/logout');
-                router.push('/login');
-              } catch {
-                router.push('/login');
-              }
-            }}
-            className="flex items-center gap-2 text-sm text-[#8b949e] hover:text-[#f85149] transition-colors"
-          >
-            <LogOut size={16} />
-            {t('logout')}
-          </button>
+          <div className="flex items-center gap-4">
+            {/* User info */}
+            {user ? (
+              <div className="flex items-center gap-2 text-sm text-[#8b949e]">
+                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-[#58a6ff]/20 text-[#58a6ff]">
+                  <User size={14} />
+                </div>
+                <div className="hidden sm:block">
+                  <p className="text-xs font-medium text-[#e6edf3]">{user.username}</p>
+                  <p className="text-[10px] text-[#8b949e]">{user.email}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-[#8b949e]">
+                <div className="w-8 h-8 rounded-full bg-[#30363d] animate-pulse" />
+                <div className="hidden sm:block">
+                  <div className="h-3 w-20 bg-[#30363d] rounded animate-pulse mb-1" />
+                  <div className="h-2 w-28 bg-[#30363d] rounded animate-pulse" />
+                </div>
+              </div>
+            )}
+            <button
+              onClick={logout}
+              title={t('logout')}
+              className="flex items-center gap-2 text-sm text-[#8b949e] hover:text-[#f85149] transition-colors"
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
         </header>
 
         {/* Page content */}

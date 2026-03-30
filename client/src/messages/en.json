@@ -196,7 +196,8 @@
     "tabs": {
       "connections": "Database",
       "apiKeys": "API Keys",
-      "password": "Password"
+      "password": "Password",
+      "profile": "Account"
     },
     "connections": {
       "title": "Database Connections",
@@ -251,6 +252,14 @@
       "success": "Password changed successfully.",
       "mismatch": "Passwords do not match.",
       "incorrect": "Current password is incorrect."
+    },
+    "profile": {
+      "title": "Account Information",
+      "username": "Username",
+      "email": "Email",
+      "joined": "Member since",
+      "success": "Profile updated successfully.",
+      "emailTaken": "This email is already in use."
     }
   },
   "auth": {

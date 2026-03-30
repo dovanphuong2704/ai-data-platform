@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import { useRouter } from '@/i18n/routing';
 import { Link } from '@/i18n/routing';
-import { apiClient } from '@/lib/api';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/components/auth-provider';
 
 export default function LoginPage() {
   const t = useTranslations('auth.login');
   const router = useRouter();
+  const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -19,7 +20,7 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await apiClient.post('/auth/login', { email, password });
+      await login(email, password);
       router.push('/chat');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed. Check your credentials.');

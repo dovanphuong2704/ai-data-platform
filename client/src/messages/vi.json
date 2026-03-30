@@ -196,7 +196,8 @@
     "tabs": {
       "connections": "Database",
       "apiKeys": "API Keys",
-      "password": "Mật khẩu"
+      "password": "Mật khẩu",
+      "profile": "Tài khoản"
     },
     "connections": {
       "title": "Kết nối Database",
@@ -251,6 +252,14 @@
       "success": "Đổi mật khẩu thành công.",
       "mismatch": "Mật khẩu không khớp.",
       "incorrect": "Mật khẩu hiện tại không đúng."
+    },
+    "profile": {
+      "title": "Thông tin tài khoản",
+      "username": "Tên người dùng",
+      "email": "Email",
+      "joined": "Tham gia từ",
+      "success": "Cập nhật thông tin thành công.",
+      "emailTaken": "Email này đã được sử dụng."
     }
   },
   "auth": {

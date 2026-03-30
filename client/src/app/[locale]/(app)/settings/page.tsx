@@ -3,12 +3,13 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from '@/i18n/routing';
 import { useLocale } from 'next-intl';
-import { Plus, Trash2, CheckCircle2, Database, Key, Loader2, X } from 'lucide-react';
+import { Plus, Trash2, CheckCircle2, Database, Key, Loader2, X, Lock, User } from 'lucide-react';
 import ConnectionTestButton from '@/components/connection-test-button';
 import { apiClient } from '@/lib/api';
 import { cn, formatDate } from '@/lib/utils';
 import type { DbConnection, ApiKey } from '@/types';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/components/auth-provider';
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
@@ -23,7 +24,7 @@ export default function SettingsPage() {
     { value: 'claude', label: t('apiKeys.providers.claude') },
   ];
 
-  const [tab, setTab] = useState<'connections' | 'apikeys'>('connections');
+  const [tab, setTab] = useState<'connections' | 'apikeys' | 'password' | 'profile'>('connections');
 
   // Connections state
   const [connections, setConnections] = useState<DbConnection[]>([]);
@@ -110,6 +111,8 @@ export default function SettingsPage() {
         {([
           { id: 'connections' as const, label: t('tabs.connections'), icon: Database },
           { id: 'apikeys' as const, label: t('tabs.apiKeys'), icon: Key },
+          { id: 'password' as const, label: t('tabs.password'), icon: Lock },
+          { id: 'profile' as const, label: t('tabs.profile'), icon: User },
         ] as const).map(tabItem => (
           <button
             key={tabItem.id}
@@ -272,6 +275,133 @@ export default function SettingsPage() {
           )}
         </div>
       )}
+
+      {/* Password tab */}
+      {tab === 'password' && (
+        <div className="glass-card p-5 max-w-md">
+          <h3 className="text-sm font-semibold text-[#e6edf3] mb-4">{t('password.title')}</h3>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            const form = e.target as HTMLFormElement;
+            const currentPassword = (form.elements.namedItem('currentPassword') as HTMLInputElement).value;
+            const newPassword = (form.elements.namedItem('newPassword') as HTMLInputElement).value;
+            const confirmPassword = (form.elements.namedItem('confirmPassword') as HTMLInputElement).value;
+
+            if (newPassword !== confirmPassword) {
+              alert(t('password.mismatch'));
+              return;
+            }
+
+            try {
+              await apiClient.put('/auth/password', {
+                currentPassword,
+                newPassword,
+              });
+              alert(t('password.success'));
+              form.reset();
+            } catch (err) {
+              alert(err instanceof Error ? err.message : tc('error'));
+            }
+          }} className="space-y-4">
+            <div>
+              <label className="block text-xs text-[#8b949e] mb-1">{t('password.current')}</label>
+              <input type="password" name="currentPassword" required className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#8b949e] mb-1">{t('password.new')}</label>
+              <input type="password" name="newPassword" required minLength={6} className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#8b949e] mb-1">{t('password.confirm')}</label>
+              <input type="password" name="confirmPassword" required minLength={6} className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none" />
+            </div>
+            <button type="submit" className="gradient-btn px-6 py-2 text-sm">
+              {t('password.change')}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Profile tab */}
+      {tab === 'profile' && (
+        <div className="glass-card p-5 max-w-md">
+          <ProfileTab />
+        </div>
+      )}
     </div>
+  );
+}
+
+// Profile Tab Component
+function ProfileTab() {
+  const t = useTranslations('settings.profile');
+  const tc = useTranslations('common');
+  const { user, refreshUser } = useAuth();
+
+  const [username, setUsername] = useState(user?.username || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [saving, setSaving] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      setUsername(user.username);
+      setEmail(user.email);
+    }
+  }, [user]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setSuccess(false);
+    try {
+      await apiClient.put('/auth/profile', { username, email });
+      await refreshUser();
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 3000);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : tc('error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <h3 className="text-sm font-semibold text-[#e6edf3]">{t('title')}</h3>
+      {success && (
+        <div className="bg-[#3fb950]/10 border border-[#3fb950]/30 text-[#3fb950] text-sm px-4 py-3 rounded-lg">
+          {t('success')}
+        </div>
+      )}
+      <div>
+        <label className="block text-xs text-[#8b949e] mb-1">{t('username')}</label>
+        <input
+          type="text"
+          value={username}
+          onChange={e => setUsername(e.target.value)}
+          required
+          minLength={2}
+          maxLength={50}
+          className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none"
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-[#8b949e] mb-1">{t('email')}</label>
+        <input
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          required
+          className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none"
+        />
+      </div>
+      <div>
+        <p className="text-xs text-[#8b949e]">{t('joined')}: {user?.created_at ? formatDate(user.created_at) : '-'}</p>
+      </div>
+      <button type="submit" disabled={saving} className="gradient-btn px-6 py-2 text-sm disabled:opacity-50">
+        {saving ? <Loader2 size={14} className="animate-spin inline" /> : null} {tc('save')}
+      </button>
+    </form>
   );
 }
