@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth-provider';
+import { AuthGuard } from '@/components/auth-guard';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -140,7 +141,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         {/* Page content */}
         <div className="flex-1 overflow-auto">
-          {children}
+          <AuthGuard>
+            {children}
+          </AuthGuard>
         </div>
       </main>
     </div>

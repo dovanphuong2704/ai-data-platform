@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from '@/i18n/routing';
 import { Link } from '@/i18n/routing';
 import { apiClient } from '@/lib/api';
@@ -10,17 +10,23 @@ import { useAuth } from '@/components/auth-provider';
 export default function RegisterPage() {
   const t = useTranslations('auth.register');
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, user, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.push('/chat');
+    }
+  }, [user, authLoading, router]);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setLoading(true);
+    setSubmitting(true);
     try {
       await apiClient.post('/auth/register', { username, email, password });
       // Auto-login after registration
@@ -29,7 +35,7 @@ export default function RegisterPage() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Registration failed.');
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
@@ -87,10 +93,10 @@ export default function RegisterPage() {
 
       <button
         type="submit"
-        disabled={loading}
+        disabled={submitting}
         className="w-full gradient-btn py-2.5 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {loading ? 'Creating account...' : t('submit')}
+        {submitting ? 'Creating account...' : t('submit')}
       </button>
 
       <p className="text-center text-sm text-[#8b949e]">

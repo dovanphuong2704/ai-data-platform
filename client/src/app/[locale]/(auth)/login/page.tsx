@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from '@/i18n/routing';
 import { Link } from '@/i18n/routing';
 import { useTranslations } from 'next-intl';
@@ -9,23 +9,29 @@ import { useAuth } from '@/components/auth-provider';
 export default function LoginPage() {
   const t = useTranslations('auth.login');
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, user, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.push('/chat');
+    }
+  }, [user, authLoading, router]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setLoading(true);
+    setSubmitting(true);
     try {
       await login(email, password);
       router.push('/chat');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed. Check your credentials.');
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
@@ -67,10 +73,10 @@ export default function LoginPage() {
 
       <button
         type="submit"
-        disabled={loading}
+        disabled={submitting}
         className="w-full gradient-btn py-2.5 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {loading ? 'Signing in...' : t('submit')}
+        {submitting ? 'Signing in...' : t('submit')}
       </button>
 
       <p className="text-center text-sm text-[#8b949e]">
