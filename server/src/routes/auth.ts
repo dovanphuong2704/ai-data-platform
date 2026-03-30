@@ -101,6 +101,104 @@ authRouter.post('/logout', (_, res) => {
   res.json({ message: 'Logged out' });
 });
 
+// PUT /api/auth/password
+authRouter.put('/password', async (req, res) => {
+  const token = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7)
+    : req.cookies?.token;
+
+  if (!token) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as { userId: number };
+
+    const schema = z.object({
+      currentPassword: z.string().min(1),
+      newPassword: z.string().min(6).max(100),
+    });
+    const { currentPassword, newPassword } = schema.parse(req.body);
+
+    const result = await appPool.query('SELECT * FROM users WHERE id = $1', [decoded.userId]);
+    const user = result.rows[0];
+
+    if (!user || !(await bcrypt.compare(currentPassword, user.password_hash))) {
+      res.status(400).json({ error: 'Current password is incorrect' });
+      return;
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await appPool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, decoded.userId]);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.status(400).json({ error: 'Validation error', details: err.issues });
+    } else {
+      console.error(err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+// PUT /api/auth/profile
+authRouter.put('/profile', async (req, res) => {
+  const token = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7)
+    : req.cookies?.token;
+
+  if (!token) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as { userId: number };
+
+    const schema = z.object({
+      username: z.string().min(2).max(50),
+      email: z.string().email().max(100),
+    });
+    const { username, email } = schema.parse(req.body);
+
+    // Check if email is taken by another user
+    const existing = await appPool.query(
+      'SELECT id FROM users WHERE email = $1 AND id != $2',
+      [email, decoded.userId]
+    );
+    if (existing.rows.length > 0) {
+      res.status(409).json({ error: 'Email already in use' });
+      return;
+    }
+
+    // Check if username is taken by another user
+    const existingUsername = await appPool.query(
+      'SELECT id FROM users WHERE username = $1 AND id != $2',
+      [username, decoded.userId]
+    );
+    if (existingUsername.rows.length > 0) {
+      res.status(409).json({ error: 'Username already in use' });
+      return;
+    }
+
+    const result = await appPool.query(
+      'UPDATE users SET username = $1, email = $2 WHERE id = $3 RETURNING id, username, email, created_at',
+      [username, email, decoded.userId]
+    );
+
+    res.json({ user: result.rows[0] });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.status(400).json({ error: 'Validation error', details: err.issues });
+    } else {
+      console.error(err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
 // GET /api/auth/me
 authRouter.get('/me', async (req, res) => {
   const token = req.headers.authorization?.startsWith('Bearer ')
