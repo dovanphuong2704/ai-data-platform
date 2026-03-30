@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Bookmark, Play, Trash2, Loader2, Clock, Search } from 'lucide-react';
+import { Bookmark, Play, Trash2, Loader2, Clock, Search, Edit2 } from 'lucide-react';
 import { apiClient } from '@/lib/api';
-import { cn, formatDate } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
 import type { SavedQuery } from '@/types';
 import SaveQueryModal from '@/components/save-query-modal';
+import ResultModal from '@/components/result-modal';
 import { useTranslations } from 'next-intl';
 
 export default function SavedQueriesPage() {
@@ -15,10 +16,16 @@ export default function SavedQueriesPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [formSql, setFormSql] = useState('');
-  const [formConnId, setFormConnId] = useState<number | undefined>();
   const [toast, setToast] = useState('');
+
+  // Save/create modal
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveSql, setSaveSql] = useState('');
+  const [saveConnId, setSaveConnId] = useState<number | undefined>();
+  const [saveEditId, setSaveEditId] = useState<number | undefined>();
+
+  // Run result modal
+  const [runModal, setRunModal] = useState<{ sql: string; connId?: number; name: string } | null>(null);
 
   const loadQueries = useCallback(async () => {
     setLoading(true);
@@ -41,6 +48,9 @@ export default function SavedQueriesPage() {
 
   const handleSaved = () => {
     loadQueries();
+    setShowSaveModal(false);
+    setSaveEditId(undefined);
+    setSaveSql('');
     showToast(tc('success'));
   };
 
@@ -74,7 +84,9 @@ export default function SavedQueriesPage() {
             className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg pl-9 pr-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none"
           />
         </div>
-        <span className="text-xs text-[#8b949e]">{filtered.length} {filtered.length !== 1 ? t('title').toLowerCase() : t('title').toLowerCase()}</span>
+        <span className="text-xs text-[#8b949e] whitespace-nowrap">
+          {filtered.length} {filtered.length === 1 ? 'query' : 'queries'}
+        </span>
       </div>
 
       {/* List */}
@@ -85,10 +97,7 @@ export default function SavedQueriesPage() {
       ) : filtered.length === 0 ? (
         <div className="text-center py-20 text-[#8b949e]">
           <Bookmark size={40} className="text-[#30363d] mx-auto mb-3" />
-          <p className="text-sm">{search ? t('empty') : t('empty')}</p>
-          {!search && (
-            <p className="text-xs mt-1">{t('empty')}</p>
-          )}
+          <p className="text-sm">{t('empty')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -98,7 +107,7 @@ export default function SavedQueriesPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className="text-sm font-medium text-[#e6edf3] truncate">{q.name}</h3>
-                    <span className="text-xs text-[#8b949e] flex items-center gap-1">
+                    <span className="text-xs text-[#8b949e] flex items-center gap-1 shrink-0">
                       <Clock size={10} /> {formatDate(q.created_at)}
                     </span>
                   </div>
@@ -110,17 +119,32 @@ export default function SavedQueriesPage() {
                   </code>
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
+                  {/* Run */}
                   <button
                     onClick={() => {
-                      setFormSql(q.sql ?? '');
-                      setFormConnId(q.connection_id);
-                      setShowForm(true);
+                      if (!q.sql) return;
+                      setRunModal({ sql: q.sql, connId: q.connection_id, name: q.name });
+                    }}
+                    disabled={!q.sql}
+                    title={t('run')}
+                    className="p-1.5 text-[#8b949e] hover:text-[#3fb950] transition-colors disabled:opacity-30"
+                  >
+                    <Play size={14} />
+                  </button>
+                  {/* Edit */}
+                  <button
+                    onClick={() => {
+                      setSaveSql(q.sql ?? '');
+                      setSaveConnId(q.connection_id);
+                      setSaveEditId(q.id);
+                      setShowSaveModal(true);
                     }}
                     title={t('edit')}
                     className="p-1.5 text-[#8b949e] hover:text-[#58a6ff] transition-colors"
                   >
-                    <Play size={14} />
+                    <Edit2 size={14} />
                   </button>
+                  {/* Delete */}
                   <button
                     onClick={() => deleteQuery(q.id)}
                     disabled={deleteId === q.id}
@@ -135,13 +159,24 @@ export default function SavedQueriesPage() {
         </div>
       )}
 
-      {/* Edit modal */}
-      {showForm && (
+      {/* Save/create modal */}
+      {showSaveModal && (
         <SaveQueryModal
-          sql={formSql}
-          connectionId={formConnId}
-          onClose={() => setShowForm(false)}
+          queryId={saveEditId}
+          sql={saveSql}
+          connectionId={saveConnId}
+          onClose={() => { setShowSaveModal(false); setSaveEditId(undefined); setSaveSql(''); }}
           onSaved={handleSaved}
+        />
+      )}
+
+      {/* Run result modal */}
+      {runModal && (
+        <ResultModal
+          sql={runModal.sql}
+          connectionId={runModal.connId}
+          queryName={runModal.name}
+          onClose={() => setRunModal(null)}
         />
       )}
 

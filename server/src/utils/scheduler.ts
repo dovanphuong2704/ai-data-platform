@@ -37,6 +37,17 @@ function parseCronNextMs(expression: string): number {
       for (let i = min; i <= max; i++) result.push(i);
       return result;
     }
+    // Handle */n syntax (every N units)
+    if (field.startsWith('*/')) {
+      const step = Number(field.slice(2));
+      if (!isNaN(step) && step > 0) {
+        const result: number[] = [];
+        for (let i = min; i <= max; i++) {
+          if (i % step === 0) result.push(i);
+        }
+        return result;
+      }
+    }
     const result: number[] = [];
     for (const part of field.split(',')) {
       if (part.includes('-')) {

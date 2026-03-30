@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useLocale } from 'next-intl';
 import { Plus, Trash2, CheckCircle2, Database, Key, Loader2, X } from 'lucide-react';
 import ConnectionTestButton from '@/components/connection-test-button';
 import { apiClient } from '@/lib/api';
@@ -11,6 +13,8 @@ import { useTranslations } from 'next-intl';
 export default function SettingsPage() {
   const t = useTranslations('settings');
   const tc = useTranslations('common');
+  const router = useRouter();
+  const locale = useLocale();
 
   const PROVIDERS = [
     { value: 'openai', label: t('apiKeys.providers.openai') },
@@ -64,6 +68,7 @@ export default function SettingsPage() {
       await loadConnections();
       setShowConnForm(false);
       setConnForm({ profile_name: '', db_host: 'localhost', db_port: '5432', db_name: '', db_user: 'postgres', db_password: '', is_default: false });
+      window.location.href = `/${locale}/chat`;
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : tc('error'));
     } finally { setConnSaving(false); }

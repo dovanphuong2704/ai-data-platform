@@ -231,9 +231,12 @@ export default function ChatPage() {
   const loadConnections = async () => {
     try {
       const { data } = await apiClient.get<{ connections: DbConnection[] }>('/connections?withStatus=true');
-      setConnections(Array.isArray(data.connections) ? data.connections : []);
-      const defaultConn = (data.connections ?? []).find(c => c.is_default);
-      if (defaultConn) setSelectedConnectionId(defaultConn.id);
+      const conns = Array.isArray(data.connections) ? data.connections : [];
+      setConnections(conns);
+      const isDefault = (c: DbConnection) =>
+        c.is_default === true || c.is_default === 'true' || c.is_default === 1;
+      const defaultConn = conns.find(isDefault);
+      setSelectedConnectionId(defaultConn?.id ?? conns[0]?.id);
     } catch { /* silent */ }
   };
 
@@ -248,9 +251,29 @@ export default function ChatPage() {
     try {
       const { data } = await apiClient.get<{ models: string[] }>(`/chat/models?apiKeyId=${keyId}`);
       const models = Array.isArray(data.models) ? data.models : [];
-      setAvailableModels(models);
-      if (models.length > 0 && !models.includes(selectedModel)) {
-        setSelectedModel(models[0]);
+
+      // Sort: newest versions first
+      const sorted = [...models].sort((a, b) => {
+        // Extract version number: gemini-2.5-flash → 2.5, gemini-2.0-flash-001 → 2.0
+        const getVer = (name: string) => {
+          const m = name.match(/(\d+)\.(\d+)/);
+          return m ? parseFloat(m[1] + '.' + m[2]) : 0;
+        };
+        // Prefer newer major.minor version
+        const va = getVer(a);
+        const vb = getVer(b);
+        if (va !== vb) return vb - va;
+        // Within same version: prefer date-suffixed (gemini-2.0-flash-001 > gemini-2.0-flash)
+        const hasDateA = /-\d{6}$/.test(a);
+        const hasDateB = /-\d{6}$/.test(b);
+        if (hasDateA !== hasDateB) return hasDateA ? -1 : 1;
+        // Same version: longer name (more suffixes) first (e.g. gemini-2.0-flash-001 > gemini-2.0-flash-exp)
+        return b.length - a.length;
+      });
+
+      setAvailableModels(sorted);
+      if (sorted.length > 0 && !sorted.includes(selectedModel)) {
+        setSelectedModel(sorted[0]);
       }
     } catch {
       setAvailableModels([]);
@@ -470,6 +493,7 @@ export default function ChatPage() {
           </button>
           <button
             onClick={() => setStreamingMode(true)}
+            title={t('streamingModeInfo')}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-[#30363d] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#8b949e] transition-colors"
           >
             <Zap size={12} />
@@ -619,7 +643,7 @@ export default function ChatPage() {
             <option value="">— Select a connection —</option>
             {connections.map(conn => (
               <option key={conn.id} value={conn.id}>
-                {conn.profile_name || `${conn.db_host}/${conn.db_name}`}
+                {conn.profile_name || `${conn.db_host}/${conn.db_name}`}{conn.is_default ? ' (default)' : ''}
               </option>
             ))}
           </select>

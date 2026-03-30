@@ -458,12 +458,15 @@ export default function ExplorerPage() {
   const loadConnections = async () => {
     try {
       const { data } = await apiClient.get<{ connections: DbConnection[] }>('/connections?withStatus=true');
-      setConnections(data.connections ?? []);
-      const defaultConn = (data.connections ?? []).find((c: DbConnection) => c.is_default);
-      if (defaultConn) setSelectedConnectionId(defaultConn.id);
+      const conns = data.connections ?? [];
+      setConnections(conns);
+      // Handle is_default as boolean or string "true"/"false" from PostgreSQL
+      const isDefault = (c: DbConnection) =>
+        c.is_default === true || c.is_default === 'true' || c.is_default === 1;
+      const defaultConn = conns.find(isDefault);
+      setSelectedConnectionId(defaultConn?.id ?? conns[0]?.id);
     } catch (err: unknown) {
       setConnections([]);
-      console.error('[loadConnections]', err);
     }
   };
 
@@ -479,7 +482,6 @@ export default function ExplorerPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setSchemaError(msg);
-      console.error('[loadSchemaInfo]', err);
     } finally {
       setLoading(false);
     }
@@ -557,7 +559,7 @@ export default function ExplorerPage() {
             <option value="">— Default connection —</option>
             {connections.map(conn => (
               <option key={conn.id} value={conn.id}>
-                {conn.profile_name || `${conn.db_host}/${conn.db_name}`}
+                {conn.profile_name || `${conn.db_host}/${conn.db_name}`}{conn.is_default ? ' (default)' : ''}
               </option>
             ))}
           </select>
@@ -698,7 +700,7 @@ export default function ExplorerPage() {
             {!loading && schemaError && (
               <div className="flex flex-col items-center justify-center h-full text-center">
                 <X size={32} className="text-[#f85149] mb-3" />
-                <p className="text-sm text-[#f85149] mb-1">{t('connectionFailed')}</p>
+                <p className="text-sm text-[#f85149] mb-1">{t('explorer.connectionFailed')}</p>
                 <p className="text-xs text-[#8b949e] mb-4 max-w-sm">{schemaError}</p>
                 <button
                   onClick={loadSchemaInfo}

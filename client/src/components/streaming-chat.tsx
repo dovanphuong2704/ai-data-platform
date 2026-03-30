@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Square } from 'lucide-react';
+import { Send, Square, Info } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslations } from 'next-intl';
 import type { AIProvider } from '@/hooks/use-ai-provider';
 
 const MAX_RETRIES = 3;
@@ -32,6 +33,7 @@ interface StreamMessage {
 type StreamPhase = 'idle' | 'status' | 'thinking' | 'sql' | 'result' | 'analysis' | 'done';
 
 export default function StreamingChat({ connectionId, aiProvider, apiKeyId, model, sessionId, onBack, onSessionId }: StreamingChatProps) {
+  const t = useTranslations('chat');
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -46,6 +48,14 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Use refs to track final values (avoids stale closure in finally block)
+  const finalResultRef = useRef<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number; duration_ms: number } | null>(null);
+  const finalSqlRef = useRef('');
+  const finalTokensRef = useRef('');
+  const finalAnalysisRef = useRef('');
+  const finalErrorRef = useRef('');
+  const finalStatusRef = useRef('');
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, currentAnalysis, currentSql, currentResult, phase]);
@@ -58,6 +68,15 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || streaming) return;
+
+    // Reset all refs before streaming
+    finalResultRef.current = null;
+    finalSqlRef.current = '';
+    finalTokensRef.current = '';
+    finalAnalysisRef.current = '';
+    finalErrorRef.current = '';
+    finalStatusRef.current = '';
+
     const userMsg: StreamMessage = { id: Date.now().toString(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
@@ -96,7 +115,6 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      // EventSource-like parser: accumulate lines until blank line
       let eventType = '';
       let dataBuffer = '';
 
@@ -110,39 +128,45 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
             case 'status':
               setPhase('status');
               setStatusMsg(chunk.message ?? '');
+              finalStatusRef.current = chunk.message ?? '';
               break;
             case 'thinking':
               setPhase('thinking');
               setStatusMsg(chunk.message ?? '');
+              finalStatusRef.current = chunk.message ?? '';
               break;
             case 'token':
               setPhase('thinking');
-              // Real-time token display: accumulate AI response as it streams
               setCurrentTokens(prev => prev + (chunk.text ?? ''));
+              finalTokensRef.current += chunk.text ?? '';
               break;
             case 'sql':
               setPhase('sql');
               setCurrentSql(chunk.sql ?? '');
+              finalSqlRef.current = chunk.sql ?? '';
               break;
             case 'result':
               setPhase('result');
-              setCurrentResult({
+              const result = {
                 columns: chunk.columns ?? [],
                 rows: chunk.rows ?? [],
                 rowCount: chunk.rowCount ?? 0,
                 duration_ms: chunk.duration_ms ?? 0,
-              });
+              };
+              setCurrentResult(result);
+              finalResultRef.current = result;
               break;
             case 'analysis':
               setPhase('analysis');
-              // Each event sends one character for typewriter effect
               setCurrentAnalysis(prev => prev + (chunk.text ?? ''));
+              finalAnalysisRef.current += chunk.text ?? '';
               break;
             case 'done':
               setPhase('done');
               break;
             case 'error':
               setError(chunk.error ?? 'Unknown error');
+              finalErrorRef.current = chunk.error ?? 'Unknown error';
               break;
             case 'session':
               if (chunk.sessionId && onSessionId) {
@@ -166,7 +190,6 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
 
         for (const line of lines) {
           if (line.startsWith('event: ')) {
-            // New event started — flush previous
             processEvent();
             eventType = line.slice(7).trim();
           } else if (line.startsWith('data: ')) {
@@ -184,6 +207,7 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
         setError('[stopped]');
+        finalErrorRef.current = '[stopped]';
       } else if (retries < MAX_RETRIES) {
         retries++;
         setRetryCount(retries);
@@ -191,30 +215,35 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
         await new Promise(r => setTimeout(r, 1000 * retries));
         await doFetch();
       } else {
-        setError(err instanceof Error ? err.message : 'Stream failed');
+        const msg = err instanceof Error ? err.message : 'Stream failed';
+        setError(msg);
+        finalErrorRef.current = msg;
       }
     } finally {
       setStreaming(false);
 
-      // Commit the assistant message
-      if (phase !== 'idle') {
-        const assistantMsg: StreamMessage = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: currentAnalysis || currentTokens || statusMsg || (currentResult ? `[Query returned ${currentResult.rowCount} row(s) in ${currentResult.duration_ms}ms]` : ''),
-          sql: currentSql || undefined,
-          columns: currentResult?.columns,
-          tableData: currentResult?.rows,
-          duration_ms: currentResult?.duration_ms,
-          rowCount: currentResult?.rowCount,
-          error: error || undefined,
-        };
-        setMessages(prev => [...prev.filter(m => m.role !== 'assistant' || m.content !== currentAnalysis), assistantMsg]);
-      }
+      // Commit assistant message using REFS (always fresh, not stale)
+      const finalContent =
+        finalAnalysisRef.current ||
+        finalTokensRef.current ||
+        finalStatusRef.current ||
+        (finalResultRef.current ? `Query returned ${finalResultRef.current.rowCount} row(s) in ${finalResultRef.current.duration_ms}ms` : '');
 
+      const assistantMsg: StreamMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: finalContent,
+        sql: finalSqlRef.current || undefined,
+        columns: finalResultRef.current?.columns,
+        tableData: finalResultRef.current?.rows,
+        duration_ms: finalResultRef.current?.duration_ms,
+        rowCount: finalResultRef.current?.rowCount,
+        error: finalErrorRef.current || undefined,
+      };
+      setMessages(prev => [...prev, assistantMsg]);
       setPhase('idle');
     }
-  }, [streaming, connectionId, aiProvider, apiKeyId, model, sessionId, onSessionId, retryCount, currentTokens, currentAnalysis, currentSql, currentResult, phase, statusMsg, error]);
+  }, [streaming, connectionId, aiProvider, apiKeyId, model, sessionId, onSessionId, retryCount]);
 
   return (
     <div className="flex flex-col h-full">
@@ -226,16 +255,25 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
               ← Back
             </button>
           )}
-          <span className="text-sm font-medium text-[#58a6ff]">Streaming Mode</span>
+          <span className="text-sm font-medium text-[#58a6ff]">{t('streaming')}</span>
           {streaming && (
             <span className="text-xs text-[#8b949e] capitalize">· {phase}</span>
           )}
         </div>
         {streaming && (
           <button onClick={stopStream} className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-[#f85149] text-[#f85149] rounded-lg hover:bg-[#f85149]/10 transition-colors">
-            <Square size={12} /> Stop
+            <Square size={12} /> {t('stop')}
           </button>
         )}
+      </div>
+
+      {/* Streaming info banner */}
+      <div className="flex items-start gap-2.5 px-6 py-3 bg-[#1c3a5e]/30 border-b border-[#30363d]">
+        <Info size={14} className="text-[#58a6ff] mt-0.5 flex-shrink-0" />
+        <div>
+          <p className="text-xs text-[#e6edf3]">{t('streamingModeInfo')}</p>
+          <p className="text-xs text-[#8b949e] mt-0.5">{t('streamingModeNote')}</p>
+        </div>
       </div>
 
       {/* Messages */}

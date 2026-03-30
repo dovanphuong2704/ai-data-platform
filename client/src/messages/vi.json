@@ -35,6 +35,8 @@
     "thinking": "Đang tạo SQL...",
     "fetchingSchema": "Đang tải cấu trúc...",
     "streaming": "Chế độ Streaming",
+    "streamingModeInfo": "Thấy AI suy nghĩ theo thời gian thực — các token xuất hiện ngay khi được sinh ra. Có thể dừng stream bất cứ lúc nào.",
+    "streamingModeNote": "Khác với chế độ mặc định: kết quả hiển thị từng phần thay vì đợi hoàn tất.",
     "stop": "Dừng",
     "pinToDashboard": "Ghim lên Dashboard",
     "saveQuery": "Lưu truy vấn",
@@ -57,6 +59,7 @@
   },
   "dashboard": {
     "title": "Bảng điều khiển",
+    "noData": "Không có dữ liệu",
     "empty": "Chưa có mục nào được ghim. Ghim kết quả từ Chat để xem ở đây.",
     "exportCsv": "Xuất CSV",
     "exportJson": "Xuất JSON",

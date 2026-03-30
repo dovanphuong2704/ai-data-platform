@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { headers } from "next/headers";
 import "./globals.css";
-import { NextIntlClientProvider } from "next-intl";
-import { getLocale } from "next-intl/server";
-import LocaleProvider from "@/components/locale-provider";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -20,15 +18,13 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const locale = await getLocale();
+  const headersList = await headers();
+  const locale = headersList.get("x-next-intl-locale") ?? "en";
 
   return (
     <html lang={locale} className="dark" suppressHydrationWarning>
       <body className={`${inter.variable} h-full antialiased`} suppressHydrationWarning>
-        <NextIntlClientProvider>
-          <LocaleProvider />
-          {children}
-        </NextIntlClientProvider>
+        {children}
       </body>
     </html>
   );

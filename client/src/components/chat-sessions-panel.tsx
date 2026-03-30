@@ -90,9 +90,12 @@ export default function ChatSessionsPanel({ currentSessionId, onSelectSession, o
         ) : (
           <div className="space-y-0.5 px-2">
             {sessions.map(session => (
-              <button
+              <div
                 key={session.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => onSelectSession(session.id)}
+                onKeyDown={(e) => e.key === 'Enter' && onSelectSession(session.id)}
                 className={cn(
                   'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors group',
                   currentSessionId === session.id
@@ -114,7 +117,7 @@ export default function ChatSessionsPanel({ currentSessionId, onSelectSession, o
                 >
                   <Trash2 size={12} />
                 </button>
-              </button>
+              </div>
             ))}
           </div>
         )}

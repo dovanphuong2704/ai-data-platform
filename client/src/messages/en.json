@@ -35,6 +35,8 @@
     "thinking": "Generating SQL...",
     "fetchingSchema": "Fetching schema...",
     "streaming": "Streaming Mode",
+    "streamingModeInfo": "See the AI thinking in real-time — tokens appear as they are generated. You can stop the stream at any time.",
+    "streamingModeNote": "Different from default mode: results appear progressively instead of all at once.",
     "stop": "Stop",
     "pinToDashboard": "Pin to Dashboard",
     "saveQuery": "Save Query",
@@ -57,6 +59,7 @@
   },
   "dashboard": {
     "title": "Dashboard",
+    "noData": "No data",
     "empty": "No pinned items yet. Pin results from Chat to see them here.",
     "exportCsv": "Export CSV",
     "exportJson": "Export JSON",

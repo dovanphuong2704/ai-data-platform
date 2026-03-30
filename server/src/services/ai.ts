@@ -143,7 +143,7 @@ export function createChatModel(
     case 'gemini': {
       return new ChatGoogleGenerativeAI({
         apiKey,
-        model: modelName ?? 'gemini-2.0-flash',
+        model: modelName ?? 'gemini-2.5-flash',
         temperature,
         maxOutputTokens: maxTokens,
         streaming: config.streaming ?? false,
