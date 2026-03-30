@@ -1,8 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { Link, usePathname, useRouter } from '@/i18n/routing';
 import { useTranslations } from 'next-intl';
 import {
   MessageSquare,
@@ -20,6 +19,7 @@ import { cn } from '@/lib/utils';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const t = useTranslations('nav');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -109,9 +109,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               try {
                 const { apiClient } = await import('@/lib/api');
                 await apiClient.post('/auth/logout');
-                window.location.href = '/login';
+                router.push('/login');
               } catch {
-                window.location.href = '/login';
+                router.push('/login');
               }
             }}
             className="flex items-center gap-2 text-sm text-[#8b949e] hover:text-[#f85149] transition-colors"

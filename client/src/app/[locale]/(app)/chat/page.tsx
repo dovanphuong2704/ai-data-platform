@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useRouter } from '@/i18n/routing';
 import { Send, Pin, Table, BarChart2, Loader2, Plug, History, Bookmark, Zap, CheckCircle2, XCircle, Database, Cpu, MessageSquare } from 'lucide-react';
 import { apiClient } from '@/lib/api';
 import { cn, exportToCSV, exportToJSON } from '@/lib/utils';

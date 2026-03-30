@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/i18n/routing';
 import { useLocale } from 'next-intl';
 import { Plus, Trash2, CheckCircle2, Database, Key, Loader2, X } from 'lucide-react';
 import ConnectionTestButton from '@/components/connection-test-button';
