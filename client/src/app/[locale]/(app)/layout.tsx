@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Link, usePathname, useRouter } from '@/i18n/routing';
+import { useLocale } from 'next-intl';
 import { useTranslations } from 'next-intl';
 import {
   MessageSquare,
@@ -15,6 +16,7 @@ import {
   Bell,
   Clock,
   User,
+  Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth-provider';
@@ -23,9 +25,28 @@ import { AuthGuard } from '@/components/auth-guard';
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const locale = useLocale();
   const t = useTranslations('nav');
   const { user, logout } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [localeMenuOpen, setLocaleMenuOpen] = useState(false);
+
+  const LOCALES = [
+    { code: 'en', label: 'English', flag: '🇺🇸' },
+    { code: 'vi', label: 'Tiếng Việt', flag: '🇻🇳' },
+  ];
+
+  const currentLocale = LOCALES.find(l => l.code === locale) ?? LOCALES[0];
+
+  // eslint-disable-next-line no-console
+  console.log('[Locale Debug]', { pathname, locale, currentLocale: currentLocale.code });
+  const switchLocale = (newLocale: string) => {
+    setLocaleMenuOpen(false);
+
+    // next-intl useRouter bản thân nó đã hiểu việc thay đổi locale
+    // Bạn chỉ cần truyền pathname hiện tại và locale mới vào options
+    router.replace(pathname, { locale: newLocale });
+  };
 
   const navItems = [
     { href: '/chat', labelKey: 'chat', icon: MessageSquare },
@@ -109,6 +130,40 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </h2>
           </div>
           <div className="flex items-center gap-4">
+            {/* Language switcher */}
+            <div className="relative">
+              <button
+                onClick={() => setLocaleMenuOpen(!localeMenuOpen)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-[#0d1117] border border-[#30363d] rounded-lg text-xs text-[#8b949e] hover:border-[#58a6ff] hover:text-[#e6edf3] transition-all"
+              >
+                <Globe size={12} className="text-[#58a6ff]" />
+                <span>{currentLocale.flag} {currentLocale.code.toUpperCase()}</span>
+              </button>
+              {localeMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-[-1]" onClick={() => setLocaleMenuOpen(false)} />
+                  <div className="absolute right-0 mt-2 w-36 bg-[#161b22] border border-[#30363d] rounded-xl shadow-xl z-50 overflow-hidden">
+                    {LOCALES.map(loc => (
+                      <button
+                        key={loc.code}
+                        onClick={() => switchLocale(loc.code)}
+                        className={cn(
+                          'w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors',
+                          loc.code === currentLocale.code
+                            ? 'bg-[#58a6ff]/10 text-[#58a6ff]'
+                            : 'text-[#8b949e] hover:bg-[#21262d] hover:text-[#e6edf3]'
+                        )}
+                      >
+                        <span>{loc.flag}</span>
+                        <span>{loc.label}</span>
+                        {loc.code === currentLocale.code && <span className="ml-auto text-[10px]">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* User info */}
             {user ? (
               <div className="flex items-center gap-2 text-sm text-[#8b949e]">
