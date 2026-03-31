@@ -69,6 +69,7 @@ queryRouter.get('/schema', async (req: AuthRequest, res) => {
 
 // POST /api/query
 queryRouter.post('/', async (req: AuthRequest, res) => {
+  const queryId = uuidv4();
   try {
     const { connectionId, sql, timeout } = querySchema.parse(req.body);
 
