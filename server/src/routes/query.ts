@@ -108,16 +108,19 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
         return;
       }
       const c = connResult.rows[0];
-      pool = await createConnectionPool(
-        `postgresql://${c.db_user}:${c.db_password}@${c.db_host}:${c.db_port}/${c.db_name}`
-      );
+      const connStr = `postgresql://${c.db_user}:${c.db_password}@${c.db_host}:${c.db_port}/${c.db_name}`;
+      console.log(`[Query] Creating connection pool to: ${c.db_host}/${c.db_name}`);
+      pool = await createConnectionPool(connStr);
+      console.log(`[Query] Connection pool created`);
     }
 
     // ── 4. Execute with cancellation support ─────────────────────────────────
     const finalSql = validation.sql!;
     const effectiveTimeout = timeout ?? 30_000;
 
+    console.log(`[Query] Connecting to pool...`);
     client = await pool.connect();
+    console.log(`[Query] Connected! Executing: ${finalSql}`);
 
     // Get PostgreSQL PID for cancellation
     const pidResult = await client.query('SELECT pg_backend_pid() as pid');
@@ -134,7 +137,9 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
     let status: 'success' | 'error' | 'cancelled' = 'success';
 
     try {
+      console.log(`[Query] Calling executeSafeQuery...`);
       result = await executeSafeQuery(pool, finalSql, effectiveTimeout);
+      console.log(`[Query] Query executed! rows: ${result.rowCount}`);
     } catch (err) {
       const errMsg = String(err);
       if (errMsg.includes('canceling statement due to user request') || errMsg.includes('terminated')) {
@@ -179,6 +184,7 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
       limited: result!.limited,
       remaining: quota.remaining - 1,
     });
+    console.log(`[Query] Response sent! rows: ${result!.rows.length}`);
   } catch (err) {
     // Cleanup on unexpected error
     removeQuery(queryId);
