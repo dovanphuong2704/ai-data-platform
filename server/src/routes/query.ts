@@ -76,6 +76,8 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
   try {
     const { connectionId, sql, timeout } = querySchema.parse(req.body);
 
+    console.log(`[Query] User ${req.userId} - SQL: ${sql} - connectionId: ${connectionId}`);
+
     // ── 1. Rate limit check ────────────────────────────────────────────────
     const quota = await checkQuota(req.userId!, 'query');
     if (!quota.allowed) {
