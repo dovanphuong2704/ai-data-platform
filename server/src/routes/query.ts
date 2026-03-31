@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { appPool, createConnectionPool } from '../services/db';
 import { cleanupHistory } from './history';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
@@ -69,7 +69,7 @@ queryRouter.get('/schema', async (req: AuthRequest, res) => {
 
 // POST /api/query
 queryRouter.post('/', async (req: AuthRequest, res) => {
-  const queryId = uuidv4();
+  const queryId = randomUUID();
   try {
     const { connectionId, sql, timeout } = querySchema.parse(req.body);
 
