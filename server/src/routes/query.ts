@@ -109,7 +109,7 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
       }
       const c = connResult.rows[0];
       const connStr = `postgresql://${c.db_user}:${c.db_password}@${c.db_host}:${c.db_port}/${c.db_name}`;
-      console.log(`[Query] Creating connection pool to: ${c.db_host}/${c.db_name}`);
+      console.log(`[Query] Creating connection pool to: ${connStr}`);
       pool = await createConnectionPool(connStr);
       console.log(`[Query] Connection pool created`);
     }
@@ -118,20 +118,7 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
     const finalSql = validation.sql!;
     const effectiveTimeout = timeout ?? 30_000;
 
-    console.log(`[Query] Connecting to pool...`);
-    client = await pool.connect();
-    console.log(`[Query] Connected! Executing: ${finalSql}`);
-
-    // Get PostgreSQL PID for cancellation
-    const pidResult = await client.query('SELECT pg_backend_pid() as pid');
-    pid = pidResult.rows[0].pid as number;
-
-    // Register so frontend can cancel
-    registerQuery(queryId, client, pid, req.userId!);
-
-    // Set statement timeout
-    await client.query(`SET statement_timeout = ${Math.max(1000, effectiveTimeout)}`);
-
+    // Note: executeSafeQuery manages its own client.connect/release internally
     let result: Awaited<ReturnType<typeof executeSafeQuery>> | null = null;
     let errorMessage: string | null = null;
     let status: 'success' | 'error' | 'cancelled' = 'success';
@@ -151,29 +138,37 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
     }
 
     // ── 5. Log to sql_query_history + auto-cleanup ─────────────────────
+    console.log(`[Query] Logging to history...`);
     appPool.query(
       `INSERT INTO sql_query_history
        (user_id, connection_id, sql, status, duration_ms, rows_returned, error_message)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [req.userId, connectionId ?? null, finalSql, status, result?.duration_ms ?? null, result?.rowCount ?? null, errorMessage]
     ).then(() => cleanupHistory(req.userId!)).catch(err => console.error('[history cleanup]', err));
+    console.log(`[Query] History logged`);
 
     // ── 6. Increment quota ───────────────────────────────────────────────────
+    console.log(`[Query] Incrementing quota...`);
     await incrementQuota(req.userId!, 'query');
+    console.log(`[Query] Quota incremented`);
 
     // ── 7. Cleanup ────────────────────────────────────────────────────────────
-    removeQuery(queryId);
-    if (pool !== appPool) await pool.end();
+    console.log(`[Query] Cleanup done`);
 
+    console.log(`[Query] status: ${status}`);
     if (status === 'error') {
+      console.log(`[Query] Sending error response...`);
       res.status(400).json({
         error: 'Query execution failed',
         details: errorMessage,
         queryId,
       });
+      console.log(`[Query] Error response sent`);
       return;
     }
 
+    console.log(`[Query] Sending success response...`);
+    console.log(`[Query] result rows: ${result?.rows?.length}, columns: ${result?.columns?.length}`);
     res.json({
       queryId,
       columns: result!.columns,
@@ -184,7 +179,7 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
       limited: result!.limited,
       remaining: quota.remaining - 1,
     });
-    console.log(`[Query] Response sent! rows: ${result!.rows.length}`);
+    console.log(`[Query] SUCCESS! Response sent!`);
   } catch (err) {
     // Cleanup on unexpected error
     removeQuery(queryId);
@@ -193,7 +188,7 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
     if (err instanceof z.ZodError) {
       res.status(400).json({ error: 'Validation error', details: err.issues });
     } else {
-      console.error(err);
+      console.error('[Query] Catch error:', err);
       res.status(500).json({ error: 'Query execution failed', details: String(err) });
     }
   }

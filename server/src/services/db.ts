@@ -210,5 +210,5 @@ export async function initDB(): Promise<void> {
 }
 
 export async function createConnectionPool(connectionString: string): Promise<Pool> {
-  return new Pool({ connectionString, max: 2, statement_timeout: 30000 });
+  return new Pool({ connectionString, max: 5, idleTimeoutMillis: 60000 });
 }

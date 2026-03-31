@@ -22,6 +22,7 @@ export async function checkQuota(
   userId: number,
   type: 'query' | 'chat',
 ): Promise<QuotaStatus> {
+  console.log(`[checkQuota] Starting for user ${userId} type ${type}`);
   const countField = `${type}_count`;
   const limitField = `${type}_limit`;
 
@@ -75,8 +76,10 @@ export async function checkQuota(
  */
 export async function incrementQuota(userId: number, type: 'query' | 'chat'): Promise<void> {
   const countField = `${type}_count`;
+  console.log(`[incrementQuota] Starting for user ${userId}`);
   await appPool.query(
     `UPDATE user_quotas SET ${countField} = ${countField} + 1 WHERE user_id = $1`,
     [userId],
   );
+  console.log(`[incrementQuota] Done for user ${userId}`);
 }
