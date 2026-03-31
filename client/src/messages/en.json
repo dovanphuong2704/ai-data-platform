@@ -101,6 +101,7 @@
     "showLess": "Show less",
     "searchTables": "Search tables...",
     "erDiagram": "ER Diagram",
+    "searchTab": "Search",
     "allSchemasTables": "{tables} tables",
     "noTablesMatch": "No tables match \"{query}\"",
     "connectionFailed": "Connection failed"

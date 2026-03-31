@@ -18,6 +18,8 @@ export interface ColumnInfo {
   column_name: string;
   data_type: string;
   is_nullable: boolean;
+  default_value: string | null;
+  description: string | null;
 }
 
 export interface TableInfo {
@@ -114,13 +116,15 @@ explorerRouter.get('/explorer/schema-info', async (req: AuthRequest, res) => {
       column_name: string;
       data_type: string;
       is_nullable: boolean;
+      column_default: string | null;
     }>(`
       SELECT
         c.table_schema,
         c.table_name,
         c.column_name,
         c.data_type,
-        c.is_nullable
+        c.is_nullable,
+        c.column_default
       FROM information_schema.columns c
       JOIN information_schema.tables t
         ON t.table_name = c.table_name AND t.table_schema = c.table_schema
@@ -173,7 +177,38 @@ explorerRouter.get('/explorer/schema-info', async (req: AuthRequest, res) => {
         column_name: row.column_name,
         data_type: row.data_type,
         is_nullable: String(row.is_nullable).toUpperCase() === 'YES',
+        default_value: row.column_default,
+        description: null, // Will be populated below
       });
+    }
+
+    // Fetch column descriptions from pg_catalog
+    const descResult = await pool.query(`
+      SELECT
+        ns.nspname AS table_schema,
+        cl.relname AS table_name,
+        a.attname AS column_name,
+        COALESCE(col_description(cl.oid, a.attnum), '') AS description
+      FROM pg_namespace ns
+      JOIN pg_class cl ON cl.relnamespace = ns.oid
+      JOIN pg_attribute a ON a.attrelid = cl.oid
+      WHERE cl.relkind = 'r'
+        AND a.attnum > 0
+        AND ns.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    `);
+
+    const descMap = new Map<string, string>();
+    for (const row of descResult.rows) {
+      const key = `${row.table_schema}.${row.table_name}.${row.column_name}`;
+      if (row.description) descMap.set(key, row.description);
+    }
+
+    // Attach descriptions to columns
+    for (const table of tableMap.values()) {
+      for (const col of table.columns) {
+        const key = `${table.schema_name}.${table.table_name}.${col.column_name}`;
+        col.description = descMap.get(key) || null;
+      }
     }
 
     const result: SchemaInfoResult = {

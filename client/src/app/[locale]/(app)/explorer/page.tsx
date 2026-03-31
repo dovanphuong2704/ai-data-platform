@@ -9,7 +9,7 @@ import { useTranslations } from 'next-intl';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'schema' | 'diagram';
+type Tab = 'schema' | 'search';
 
 // Schema color palette — distinct, easy to tell apart
 const SCHEMA_COLORS = [
@@ -154,26 +154,45 @@ function drawArrows(arrows: Arrow[], svgRef: SVGSVGElement | null) {
   while (svgRef.firstChild) svgRef.removeChild(svgRef.firstChild);
 
   arrows.forEach(({ fromEl, toEl, label, color }) => {
-    const fx = fromEl.offsetLeft + fromEl.offsetWidth / 2;
-    const fy = fromEl.offsetTop + fromEl.offsetHeight / 2;
-    const tx = toEl.offsetLeft + toEl.offsetWidth / 2;
-    const ty = toEl.offsetTop + toEl.offsetHeight / 2;
+    const container = fromEl.offsetParent as HTMLElement;
+    if (!container) return;
 
-    // Simple straight line with arrowhead
-    const line = document.createElementNS(ns, 'line');
-    line.setAttribute('x1', String(fx));
-    line.setAttribute('y1', String(fy));
-    line.setAttribute('x2', String(tx));
-    line.setAttribute('y2', String(ty));
-    line.setAttribute('stroke', color);
-    line.setAttribute('stroke-width', '1.5');
-    line.setAttribute('stroke-dasharray', '4 3');
-    line.setAttribute('opacity', '0.7');
-    svgRef.appendChild(line);
+    // Get positions relative to the SVG's parent container (which has overflow)
+    const containerRect = container.getBoundingClientRect();
+    const fromRect = fromEl.getBoundingClientRect();
+    const toRect = toEl.getBoundingClientRect();
 
-    // Arrowhead
-    const angle = Math.atan2(ty - fy, tx - fx);
-    const arrowLen = 8;
+    // Relative to container viewport
+    const fx = fromRect.left - containerRect.left + fromRect.width / 2;
+    const fy = fromRect.top - containerRect.top + fromRect.height / 2;
+    const tx = toRect.left - containerRect.left + toRect.width / 2;
+    const ty = toRect.top - containerRect.top + toRect.height / 2;
+
+    // Bezier curve for smooth arrows
+    const dx = tx - fx;
+    const dy = ty - fy;
+    const midX = fx + dx / 2;
+    const midY = fy + dy / 2;
+
+    // Control points for smooth curve
+    const cpX1 = fx + dx * 0.3;
+    const cpY1 = fy;
+    const cpX2 = tx - dx * 0.3;
+    const cpY2 = ty;
+
+    // Draw bezier curve
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', `M ${fx} ${fy} C ${cpX1} ${cpY1}, ${cpX2} ${cpY2}, ${tx} ${ty}`);
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('opacity', '0.8');
+    path.setAttribute('stroke-dasharray', '6 4');
+    svgRef.appendChild(path);
+
+    // Arrowhead at end
+    const angle = Math.atan2(ty - cpY2, tx - cpX2);
+    const arrowLen = 9;
     const ax1 = tx - arrowLen * Math.cos(angle - Math.PI / 7);
     const ay1 = ty - arrowLen * Math.sin(angle - Math.PI / 7);
     const ax2 = tx - arrowLen * Math.cos(angle + Math.PI / 7);
@@ -181,8 +200,20 @@ function drawArrows(arrows: Arrow[], svgRef: SVGSVGElement | null) {
     const arrowHead = document.createElementNS(ns, 'polygon');
     arrowHead.setAttribute('points', `${tx},${ty} ${ax1},${ay1} ${ax2},${ay2}`);
     arrowHead.setAttribute('fill', color);
-    arrowHead.setAttribute('opacity', '0.7');
+    arrowHead.setAttribute('opacity', '0.85');
     svgRef.appendChild(arrowHead);
+
+    // Label in the middle
+    const labelEl = document.createElementNS(ns, 'text');
+    labelEl.setAttribute('x', String(midX));
+    labelEl.setAttribute('y', String(midY));
+    labelEl.setAttribute('fill', color);
+    labelEl.setAttribute('font-size', '8');
+    labelEl.setAttribute('font-family', 'monospace');
+    labelEl.setAttribute('text-anchor', 'middle');
+    labelEl.setAttribute('opacity', '0.9');
+    labelEl.textContent = label;
+    svgRef.appendChild(labelEl);
   });
 }
 
@@ -252,12 +283,23 @@ function SchemaDiagram({ schemaInfo, onSelectTable, selectedTable, t }: SchemaDi
         const fromEl = cardRefs.current.get(fromKey);
         const toEl = cardRefs.current.get(toKey);
         if (fromEl && toEl) {
+          const fromRect = fromEl.getBoundingClientRect();
+          const toRect = toEl.getBoundingClientRect();
+          const fx = fromRect.left - containerRect.left + fromRect.width / 2;
+          const fy = fromRect.top - containerRect.top + fromRect.height / 2;
+          const tx = toRect.left - containerRect.left + toRect.width / 2;
+          const ty = toRect.top - containerRect.top + toRect.height / 2;
           arrows.push({
             fromEl,
             toEl,
             label: `${fk.from_column} → ${fk.to_column}`,
             color: '#d29922',
           });
+          // eslint-disable-next-line no-console
+          console.log('[FK Arrow]', fromKey, '→', toKey, { fx, fy, tx, ty });
+        } else {
+          // eslint-disable-next-line no-console
+          console.log('[FK Arrow MISSING]', fromKey, '→', toKey, { fromEl: !!fromEl, toEl: !!toEl });
         }
       }
     });
@@ -435,6 +477,150 @@ function SchemaDiagram({ schemaInfo, onSelectTable, selectedTable, t }: SchemaDi
   );
 }
 
+// ─── Quick Search Component ───────────────────────────────────────────────────
+
+interface QuickSearchProps {
+  schemaInfo: SchemaInfoResponse | null;
+  onSelect: (schema: string, table: string) => void;
+  t: ReturnType<typeof useTranslations>;
+}
+
+function QuickSearch({ schemaInfo, onSelect, t }: QuickSearchProps) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Array<{ type: 'table' | 'column' | 'fk'; schema: string; table?: string; column?: string; detail?: string }>>([]);
+
+  useEffect(() => {
+    if (!schemaInfo || !query.trim()) {
+      setResults([]);
+      return;
+    }
+
+    const q = query.toLowerCase();
+    const hits: typeof results = [];
+
+    // Search tables
+    schemaInfo.tables.forEach(tbl => {
+      if (tbl.table_name.toLowerCase().includes(q)) {
+        hits.push({ type: 'table', schema: tbl.schema_name, table: tbl.table_name });
+      }
+      // Search columns within table
+      tbl.columns.forEach(col => {
+        if (col.column_name.toLowerCase().includes(q)) {
+          hits.push({
+            type: 'column',
+            schema: tbl.schema_name,
+            table: tbl.table_name,
+            column: col.column_name,
+            detail: `${col.data_type}${col.is_nullable ? ' (nullable)' : ''}`
+          });
+        }
+      });
+    });
+
+    // Search foreign keys
+    schemaInfo.foreignKeys.forEach(fk => {
+      const fkStr = `${fk.from_table}.${fk.from_column} → ${fk.to_table}.${fk.to_column}`;
+      if (fkStr.toLowerCase().includes(q)) {
+        hits.push({
+          type: 'fk',
+          schema: fk.from_schema,
+          table: fk.from_table,
+          column: fk.from_column,
+          detail: `→ ${fk.to_schema}.${fk.to_table}.${fk.to_column}`
+        });
+      }
+    });
+
+    setResults(hits.slice(0, 50)); // Limit results
+  }, [query, schemaInfo]);
+
+  if (!schemaInfo) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 size={20} className="animate-spin text-[#58a6ff]" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full p-4">
+      {/* Search input */}
+      <div className="relative mb-4">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#484f58]" />
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder={t('explorer.searchTables') || 'Search tables, columns, FKs...'}
+          className="w-full pl-9 pr-4 py-2.5 bg-[#161b22] border border-[#30363d] text-[#e6edf3] rounded-lg text-sm focus:outline-none focus:border-[#58a6ff] placeholder:text-[#484f58]"
+          autoFocus
+        />
+        {query && (
+          <button
+            onClick={() => setQuery('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8b949e] hover:text-[#e6edf3]"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Stats */}
+      <div className="flex items-center gap-4 mb-4 text-xs text-[#8b949e]">
+        <span>{schemaInfo.tables.length} tables</span>
+        <span>{schemaInfo.tables.reduce((a, t) => a + t.columns.length, 0)} columns</span>
+        <span>{schemaInfo.foreignKeys.length} foreign keys</span>
+      </div>
+
+      {/* Results */}
+      <div className="flex-1 overflow-y-auto">
+        {!query.trim() ? (
+          <div className="text-center py-12 text-[#8b949e] text-sm">
+            <Search size={32} className="mx-auto mb-3 text-[#30363d]" />
+            <p>Search by table name, column name, or foreign key</p>
+          </div>
+        ) : results.length === 0 ? (
+          <div className="text-center py-12 text-[#8b949e] text-sm">
+            <p>No results for "{query}"</p>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {results.map((r, i) => (
+              <button
+                key={i}
+                onClick={() => onSelect(r.schema, r.table!)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left hover:bg-[#21262d] transition-colors"
+              >
+                {r.type === 'table' && <Table2 size={14} className="text-[#58a6ff]" />}
+                {r.type === 'column' && <KeyRound size={14} className="text-[#d29922]" />}
+                {r.type === 'fk' && <ArrowRight size={14} className="text-[#a371f7]" />}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-[#e6edf3]">{r.table || r.column}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#21262d] text-[#8b949e]">{r.schema}</span>
+                  </div>
+                  {r.type === 'column' && (
+                    <p className="text-[10px] text-[#8b949e] mt-0.5 truncate">{r.detail}</p>
+                  )}
+                  {r.type === 'fk' && (
+                    <p className="text-[10px] text-[#a371f7] mt-0.5 truncate">{r.detail}</p>
+                  )}
+                </div>
+                <ChevronRight size={12} className="text-[#484f58]" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {results.length > 0 && results.length === 50 && (
+        <div className="text-center py-2 text-[10px] text-[#8b949e]">
+          Showing 50 results. Refine search for more.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Explorer Page ───────────────────────────────────────────────────────
 
 export default function ExplorerPage() {
@@ -450,6 +636,10 @@ export default function ExplorerPage() {
   const [previewData, setPreviewData] = useState<QueryResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  // eslint-disable-next-line no-console
+  console.log('[Explorer] Render - loading:', previewLoading, 'data:', !!previewData, 'error:', previewError);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 10;
 
   useEffect(() => {
     loadConnections();
@@ -490,21 +680,30 @@ export default function ExplorerPage() {
     loadSchemaInfo();
   }, [loadSchemaInfo]);
 
-  const previewTable = useCallback(async (schema: string, table: string) => {
+  const previewTable = useCallback(async (schema: string, table: string, pageNum = 0) => {
+    console.log('[Explorer] previewTable called', { schema, table, pageNum });
+    setSelectedTable({ schema, table });
+    setPage(pageNum);
     setPreviewLoading(true);
     setPreviewError('');
     setPreviewData(null);
+    console.log('[Explorer] State set - loading should be true');
     try {
-      const payload: { sql: string; connectionId?: number } = {
-        sql: `SELECT * FROM "${schema}"."${table}" LIMIT 50`,
+      const connPayload: { sql: string; connectionId?: number } = {
+        sql: `SELECT * FROM "${schema}"."${table}" LIMIT 10 OFFSET ${pageNum * 10}`,
       };
-      if (selectedConnectionId) payload.connectionId = selectedConnectionId;
-      const { data } = await apiClient.post<QueryResult>('/query', payload);
+      if (selectedConnectionId) connPayload.connectionId = selectedConnectionId;
+      console.log('[Explorer] Calling API with SQL:', connPayload.sql);
+      const { data } = await apiClient.post<QueryResult>('/query', connPayload);
+      console.log('[Explorer] API response:', data);
       setPreviewData(data);
+      console.log('[Explorer] Data set, loading should be false');
     } catch (err: any) {
+      console.error('[Explorer] API error:', err);
       setPreviewError(err?.response?.data?.error ?? String(err));
     } finally {
       setPreviewLoading(false);
+      console.log('[Explorer] Finally: loading set to false');
     }
   }, [selectedConnectionId]);
 
@@ -590,7 +789,7 @@ export default function ExplorerPage() {
         <div className="flex border-b border-[#30363d]">
           {[
             { id: 'schema' as Tab, label: t('explorer.schemaTab'), icon: Table2 },
-            { id: 'diagram' as Tab, label: t('explorer.diagramTab'), icon: GitBranch },
+            { id: 'search' as Tab, label: t('explorer.searchTab'), icon: Search },
           ].map(tabItem => (
             <button
               key={tabItem.id}
@@ -660,29 +859,8 @@ export default function ExplorerPage() {
 
       {/* Main content area */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {tab === 'diagram' && (
-          <div className="flex-1 overflow-hidden">
-            {schemaInfo ? (
-            <SchemaDiagram
-              schemaInfo={schemaInfo}
-              onSelectTable={(schema, table) => {
-                setSelectedTable({ schema, table });
-                previewTable(schema, table);
-              }}
-              selectedTable={selectedTable}
-              t={t}
-            />
-            ) : schemaError ? (
-              <div className="flex items-center justify-center h-full flex-col text-center">
-                <X size={24} className="text-[#f85149] mb-2" />
-                <p className="text-xs text-[#8b949e] max-w-xs">{schemaError}</p>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full">
-                <Loader2 size={20} className="animate-spin text-[#58a6ff]" />
-              </div>
-            )}
-          </div>
+        {tab === 'search' && (
+          <QuickSearch schemaInfo={schemaInfo} onSelect={(schema, table) => { previewTable(schema, table); }} t={t} />
         )}
 
         {tab === 'schema' && (
@@ -722,25 +900,11 @@ export default function ExplorerPage() {
             )}
 
             {/* Welcome — schema loaded, no table selected */}
-            {!loading && !schemaError && schemaInfo && !selectedTable && !previewLoading && !previewData && (
+            {!loading && !schemaError && schemaInfo && !selectedTable && (
               <div className="flex flex-col items-center justify-center h-full text-center">
-                <Table2 size={48} className="text-[#21262d] mb-4" />
-                <h2 className="text-lg font-semibold text-[#8b949e] mb-2">{t('explorer.title')}</h2>
-                <p className="text-sm text-[#8b949e] max-w-sm mb-6">{t('explorer.selectTable')}</p>
-                <div className="flex gap-3">
-                  <div className="text-center px-4 py-2 bg-[#161b22] rounded-lg border border-[#30363d]">
-                    <div className="text-lg font-bold text-[#e6edf3]">{stats?.schemas ?? 0}</div>
-                    <div className="text-xs text-[#8b949e]">{t('explorer.schemas')}</div>
-                  </div>
-                  <div className="text-center px-4 py-2 bg-[#161b22] rounded-lg border border-[#30363d]">
-                    <div className="text-lg font-bold text-[#e6edf3]">{stats?.tables ?? 0}</div>
-                    <div className="text-xs text-[#8b949e]">{t('explorer.tables')}</div>
-                  </div>
-                  <div className="text-center px-4 py-2 bg-[#161b22] rounded-lg border border-[#30363d]">
-                    <div className="text-lg font-bold text-[#e6edf3]">{stats?.fks ?? 0}</div>
-                    <div className="text-xs text-[#8b949e]">{t('explorer.fks')}</div>
-                  </div>
-                </div>
+                <Database size={48} className="text-[#21262d] mb-4" />
+                <h2 className="text-base font-semibold text-[#8b949e] mb-2">{t('explorer.title')}</h2>
+                <p className="text-sm text-[#8b949e] max-w-xs">{t('explorer.selectTable')}</p>
               </div>
             )}
 
@@ -772,7 +936,7 @@ export default function ExplorerPage() {
                   if (!tableInfo) return null;
                   return (
                     <div className="mb-6">
-                      <h3 className="text-xs font-semibold text-[#8b949e] mb-2 uppercase tracking-wider">
+                      <h3 className="text-xs font-semibold text-[#8b949e] mb-3 uppercase tracking-wider">
                         {t('explorer.columns')} ({tableInfo.columns.length})
                       </h3>
                       <div className="overflow-x-auto rounded-lg border border-[#30363d]">
@@ -781,19 +945,35 @@ export default function ExplorerPage() {
                             <tr className="bg-[#21262d]">
                               <th className="px-4 py-2.5 text-left font-medium text-[#8b949e]">Column</th>
                               <th className="px-4 py-2.5 text-left font-medium text-[#8b949e]">Type</th>
-                              <th className="px-4 py-2.5 text-center font-medium text-[#8b949e]">{t('explorer.nullable')}</th>
+                              <th className="px-4 py-2.5 text-center font-medium text-[#8b949e]">Nullable</th>
+                              <th className="px-4 py-2.5 text-left font-medium text-[#8b949e]">Default</th>
+                              <th className="px-4 py-2.5 text-left font-medium text-[#8b949e]">Description</th>
                             </tr>
                           </thead>
                           <tbody>
                             {tableInfo.columns.map((col, i) => (
                               <tr key={col.column_name} className={cn('border-t border-[#30363d]', i % 2 === 0 ? 'bg-[#161b22]' : 'bg-[#0d1117]')}>
-                                <td className="px-4 py-2 text-[#e6edf3] font-mono">{col.column_name}</td>
-                                <td className="px-4 py-2 text-[#58a6ff] font-mono">{col.data_type}</td>
-                                <td className="px-4 py-2 text-center">
+                                <td className="px-4 py-2.5">
+                                  <span className="font-mono font-medium text-[#e6edf3]">{col.column_name}</span>
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <span className="font-mono text-[#58a6ff]">{col.data_type}</span>
+                                </td>
+                                <td className="px-4 py-2.5 text-center">
                                   {col.is_nullable
-                                    ? <span className="text-[#8b949e] text-[10px]">{t('explorer.nullable')}</span>
-                                    : <span className="text-[#3fb950] text-[10px]">{t('explorer.notNull')}</span>
+                                    ? <span className="text-[#8b949e] text-[10px]">YES</span>
+                                    : <span className="text-[#3fb950] text-[10px]">NO</span>
                                   }
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <span className="font-mono text-[#8b949e] text-[10px]">
+                                    {col.default_value ?? '—'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <span className="text-[#8b949e] text-[10px]">
+                                    {col.description || '—'}
+                                  </span>
                                 </td>
                               </tr>
                             ))}
@@ -851,7 +1031,7 @@ export default function ExplorerPage() {
 
                 {/* Data preview */}
                 <div>
-                  <h3 className="text-xs font-semibold text-[#8b949e] mb-2 uppercase tracking-wider flex items-center gap-2">
+                  <h3 className="text-xs font-semibold text-[#8b949e] mb-3 uppercase tracking-wider flex items-center gap-2">
                     <Table2 size={12} />
                     {t('explorer.dataPreview')}
                   </h3>
@@ -866,23 +1046,27 @@ export default function ExplorerPage() {
                     </div>
                   ) : previewData ? (
                     <div>
-                      <div className="text-xs text-[#8b949e] mb-2">
-                        {previewData.rowCount} row(s) · {previewData.columns.length} columns
-                      </div>
-                      <div className="overflow-x-auto rounded-lg border border-[#30363d]">
+                      {/* Table */}
+                      <div className="overflow-x-auto rounded-lg border border-[#30363d] mb-3">
                         <table className="w-full text-xs">
                           <thead>
                             <tr className="bg-[#21262d]">
                               {previewData.columns.map(col => (
-                                <th key={col} className="px-3 py-2 text-left font-medium text-[#8b949e] whitespace-nowrap">{col}</th>
+                                <th key={col} className="px-3 py-2.5 text-left font-medium text-[#8b949e] whitespace-nowrap">{col}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {previewData.rows.map((row, i) => (
+                            {previewData.rows.length === 0 ? (
+                              <tr>
+                                <td colSpan={previewData.columns.length} className="px-3 py-8 text-center text-[#8b949e]">
+                                  No data
+                                </td>
+                              </tr>
+                            ) : previewData.rows.map((row, i) => (
                               <tr key={i} className={cn('border-t border-[#30363d]', i % 2 === 0 ? 'bg-[#161b22]' : 'bg-[#0d1117]')}>
                                 {previewData.columns.map(col => (
-                                  <td key={col} className="px-3 py-2 text-[#e6edf3] whitespace-nowrap">
+                                  <td key={col} className="px-3 py-2 text-[#e6edf3] whitespace-nowrap max-w-[200px] truncate">
                                     {row[col] === null ? (
                                       <span className="text-[#8b949e] italic">NULL</span>
                                     ) : (
@@ -895,6 +1079,41 @@ export default function ExplorerPage() {
                           </tbody>
                         </table>
                       </div>
+
+                      {/* Pagination */}
+                      {selectedTable && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-[#8b949e]">
+                            Showing {previewData.rows.length} row(s)
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => previewTable(selectedTable.schema, selectedTable.table, 0)}
+                              disabled={page === 0}
+                              className="px-2 py-1 text-xs rounded border border-[#30363d] text-[#8b949e] hover:bg-[#21262d] disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              ««
+                            </button>
+                            <button
+                              onClick={() => previewTable(selectedTable.schema, selectedTable.table, page - 1)}
+                              disabled={page === 0}
+                              className="px-2 py-1 text-xs rounded border border-[#30363d] text-[#8b949e] hover:bg-[#21262d] disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              «
+                            </button>
+                            <span className="px-3 py-1 text-xs text-[#e6edf3]">
+                              Page {page + 1}
+                            </span>
+                            <button
+                              onClick={() => previewTable(selectedTable.schema, selectedTable.table, page + 1)}
+                              disabled={previewData.rows.length < PAGE_SIZE}
+                              className="px-2 py-1 text-xs rounded border border-[#30363d] text-[#8b949e] hover:bg-[#21262d] disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              »
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </div>

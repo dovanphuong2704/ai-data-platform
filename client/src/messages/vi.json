@@ -101,6 +101,7 @@
     "showLess": "Thu gọn",
     "searchTables": "Tìm kiếm bảng...",
     "erDiagram": "Sơ đồ ER",
+    "searchTab": "Tìm kiếm",
     "allSchemasTables": "{tables} bảng",
     "noTablesMatch": "Không có bảng nào khớp \"{query}\"",
     "connectionFailed": "Kết nối thất bại"

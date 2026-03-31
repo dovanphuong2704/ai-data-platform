@@ -140,6 +140,8 @@ export interface ColumnDetail {
   column_name: string;
   data_type: string;
   is_nullable: boolean;
+  default_value?: string | null;
+  description?: string | null;
 }
 
 export interface TableDetail {
