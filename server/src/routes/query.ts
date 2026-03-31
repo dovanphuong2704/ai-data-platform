@@ -69,10 +69,6 @@ queryRouter.get('/schema', async (req: AuthRequest, res) => {
 
 // POST /api/query
 queryRouter.post('/', async (req: AuthRequest, res) => {
-  const queryId = uuidv4();
-  let client = null;
-  let pid = -1;
-
   try {
     const { connectionId, sql, timeout } = querySchema.parse(req.body);
 
@@ -181,9 +177,7 @@ queryRouter.post('/', async (req: AuthRequest, res) => {
     });
     console.log(`[Query] SUCCESS! Response sent!`);
   } catch (err) {
-    // Cleanup on unexpected error
     removeQuery(queryId);
-    if (client) client.release();
 
     if (err instanceof z.ZodError) {
       res.status(400).json({ error: 'Validation error', details: err.issues });
