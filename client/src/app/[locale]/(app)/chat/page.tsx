@@ -31,6 +31,14 @@ const SUGGESTIONS = [
 const CHART_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39d353'];
 
 function ResultTable({ columns, rows }: { columns: string[]; rows: Record<string, unknown>[] }) {
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 50;
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const clampedPage = Math.min(page, totalPages - 1);
+  const paginatedRows = rows.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
+
+  useEffect(() => { setPage(0); }, [rows]);
+
   if (!rows.length) return <p className="text-sm text-[#8b949e]">No results found.</p>;
   return (
     <div className="overflow-x-auto rounded-lg border border-[#30363d]">
@@ -43,7 +51,7 @@ function ResultTable({ columns, rows }: { columns: string[]; rows: Record<string
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 50).map((row, i) => (
+          {paginatedRows.map((row, i) => (
             <tr key={i} className={cn('border-t border-[#30363d]', i % 2 === 0 ? 'bg-[#161b22]' : 'bg-[#0d1117]')}>
               {columns.map(col => (
                 <td key={col} className="px-3 py-2 text-[#e6edf3] whitespace-nowrap">{String(row[col] ?? '')}</td>
@@ -52,7 +60,26 @@ function ResultTable({ columns, rows }: { columns: string[]; rows: Record<string
           ))}
         </tbody>
       </table>
-      {rows.length > 50 && <p className="text-xs text-[#8b949e] px-3 py-2 bg-[#21262d]">Showing 50 of {rows.length} rows</p>}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#21262d]">
+        <span className="text-xs text-[#8b949e]">
+          {rows.length} rows
+          {totalPages > 1 && ` · Trang ${clampedPage + 1}/${totalPages}`}
+        </span>
+        {totalPages > 1 && (
+          <div className="flex gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={clampedPage === 0}
+              className="px-2 py-0.5 text-xs rounded border border-[#30363d] text-[#8b949e] hover:text-[#58a6ff] hover:border-[#58a6ff] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >‹ Prev</button>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={clampedPage >= totalPages - 1}
+              className="px-2 py-0.5 text-xs rounded border border-[#30363d] text-[#8b949e] hover:text-[#58a6ff] hover:border-[#58a6ff] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >Next ›</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -144,6 +171,7 @@ export default function ChatPage() {
   const { quota, fetchQuota } = useQuota();
 
   const [saveModalSql, setSaveModalSql] = useState<string | null>(null);
+  const [sqlExpandedStates, setSqlExpandedStates] = useState<Record<string, boolean>>({});
   const [streamingMode, setStreamingMode] = useState(false);
 
   // ── Chat sessions ────────────────────────────────────────────────────────
@@ -542,23 +570,35 @@ export default function ChatPage() {
               <p className="whitespace-pre-wrap">{msg.content}</p>
 
               {msg.sql && (
-                <div className="mt-3">
-                  <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                    <code className="text-xs font-mono text-[#58a6ff] bg-[#0d1117] px-2 py-1 rounded">
-                      {msg.sql.length > 80 ? msg.sql.slice(0, 80) + '...' : msg.sql}
-                    </code>
-                    {!msg.pinned && (
-                      <button onClick={() => pinToDashboard(msg)} title={t('pinToDashboard')} className="text-[#8b949e] hover:text-[#58a6ff] transition-colors">
-                        <Pin size={12} />
+                <div className="mt-3 rounded-lg border border-[#30363d] overflow-hidden">
+                  {/* Header bar */}
+                  <div className="flex items-center justify-between bg-[#1c2128] px-3 py-1.5 border-b border-[#30363d]">
+                    <div className="flex items-center gap-2">
+                      {!msg.pinned && (
+                        <button onClick={() => pinToDashboard(msg)} title={t('pinToDashboard')} className="text-[#8b949e] hover:text-[#58a6ff] transition-colors">
+                          <Pin size={12} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { setSaveModalSql(msg.sql ?? null); }}
+                        title={t('saveQuery')}
+                        className="text-[#8b949e] hover:text-[#3fb950] transition-colors"
+                      >
+                        <Bookmark size={12} />
                       </button>
-                    )}
+                    </div>
                     <button
-                      onClick={() => { setSaveModalSql(msg.sql ?? null); }}
-                      title={t('saveQuery')}
-                      className="text-[#8b949e] hover:text-[#3fb950] transition-colors"
+                      onClick={() => setSqlExpandedStates(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
+                      className="flex items-center gap-1.5 text-xs text-[#8b949e] hover:text-[#58a6ff] transition-colors"
                     >
-                      <Bookmark size={12} />
+                      {sqlExpandedStates[msg.id] ? '▲ Ẩn SQL' : '▼ Xem SQL'}
                     </button>
+                  </div>
+                  {/* SQL body — hidden by default */}
+                  <div className={cn('bg-[#0d1117]', !sqlExpandedStates[msg.id] ? 'hidden' : '')}>
+                    <pre className="text-xs font-mono text-[#58a6ff] px-3 py-2 whitespace-pre-wrap break-all overflow-x-auto">
+                      {msg.sql}
+                    </pre>
                   </div>
                 </div>
               )}
