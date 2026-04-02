@@ -11,10 +11,12 @@ export interface ChatModelConfig {
   maxTokens?: number;
   modelName?: string;
   streaming?: boolean;
+  /** Gemini only: thinking budget in tokens (0 = no thinking, 1024+ = deep reasoning) */
+  thinkingBudget?: number;
 }
 
-const DEFAULT_TEMPERATURE = 0.3;
-const DEFAULT_MAX_TOKENS = 2048;
+const DEFAULT_TEMPERATURE = 0;
+const DEFAULT_MAX_TOKENS = 4096;
 
 /**
  * Fetch real available models from provider API.
@@ -147,6 +149,12 @@ export function createChatModel(
         temperature,
         maxOutputTokens: maxTokens,
         streaming: config.streaming ?? false,
+        ...(config.thinkingBudget !== undefined && {
+          thinkingConfig: {
+            thinkingBudget: config.thinkingBudget,
+            thinkingLevel: 'MEDIUM',
+          },
+        }),
       });
     }
 

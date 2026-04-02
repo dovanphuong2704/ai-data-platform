@@ -197,8 +197,28 @@
     "tabs": {
       "connections": "Database",
       "apiKeys": "API Keys",
+      "dictionary": "Từ điển",
       "password": "Mật khẩu",
       "profile": "Tài khoản"
+    },
+    "dictionary": {
+      "title": "Từ điển Việt-Anh",
+      "add": "Thêm từ",
+      "addTitle": "Thêm entry mới",
+      "editTitle": "Sửa entry",
+      "edit": "Sửa",
+      "delete": "Xóa",
+      "viKeywords": "Từ tiếng Việt",
+      "enKeywords": "Từ tiếng Anh",
+      "viHint": "Phân cách bằng dấu phẩy. VD: điểm cháy, cháy",
+      "enHint": "Phân cách bằng dấu phẩy. VD: fire, hotspot",
+      "category": "Nhóm",
+      "actions": "Thao tác",
+      "noEntries": "Chưa có entry nào.",
+      "exportSuccess": "Đã xuất dictionary!",
+      "importSuccess": "Đã nhập dictionary!",
+      "importFailed": "Nhập thất bại!",
+      "total": "{count} entries"
     },
     "connections": {
       "title": "Kết nối Database",

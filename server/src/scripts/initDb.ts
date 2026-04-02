@@ -223,6 +223,118 @@ async function main(): Promise<void> {
     `);
     console.log('  ✓ chat_messages');
 
+    // ── 14. schema_dictionary ──────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_dictionary (
+        id SERIAL PRIMARY KEY,
+        vi_keywords TEXT NOT NULL,
+        en_keywords TEXT NOT NULL,
+        category VARCHAR(50) DEFAULT 'general',
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('  ✓ schema_dictionary');
+
+    // Seed initial Vietnamese-English dictionary data
+    const seedData = [
+      // Fire / Forest fire
+      ['điểm cháy', 'fire alert point hotspot', 'fire'],
+      ['cháy', 'fire burn wildfire', 'fire'],
+      ['đám cháy', 'fire burn', 'fire'],
+      ['lửa', 'fire burn flame', 'fire'],
+      ['khói', 'smoke', 'fire'],
+      ['cảnh báo cháy', 'fire alert warning fire_alert', 'fire'],
+      ['cháy rừng', 'fire wildfire forest_fire', 'fire'],
+      ['báo cháy', 'fire alert', 'fire'],
+
+      // Camera
+      ['camera', 'camera device cam', 'camera'],
+      ['quan sát', 'camera monitoring', 'camera'],
+      ['giám sát', 'camera monitor surveillance', 'camera'],
+      ['mắt camera', 'camera', 'camera'],
+
+      // Detection
+      ['phát hiện', 'detect detection', 'detect'],
+      ['biến động', 'detect change detection', 'detect'],
+      ['mất rừng', 'detect deforestation', 'detect'],
+      ['thay đổi', 'change', 'detect'],
+
+      // Map / GIS
+      ['bản đồ', 'map gis', 'map'],
+      ['vị trí', 'map location coordinate', 'map'],
+      ['tọa độ', 'coordinate latitude longitude location', 'map'],
+      ['lớp', 'layer', 'map'],
+      ['lớp bản đồ', 'layer map', 'map'],
+
+      // Satellite
+      ['vệ tinh', 'satellite', 'satellite'],
+      ['ảnh vệ tinh', 'satellite image', 'satellite'],
+
+      // Weather
+      ['thời tiết', 'weather climate', 'weather'],
+      ['khí tượng', 'weather meteorology', 'weather'],
+      ['mưa', 'rain rainfall', 'weather'],
+      ['nhiệt độ', 'temperature', 'weather'],
+
+      // Patrol
+      ['tuần tra', 'patrol inspection', 'patrol'],
+      ['kiểm tra', 'patrol inspection check', 'patrol'],
+
+      // Drone
+      ['drone', 'flycam drone uav', 'drone'],
+      ['máy bay', 'flycam drone', 'drone'],
+      ['flycam', 'flycam drone', 'drone'],
+
+      // Doc
+      ['tài liệu', 'doc document', 'doc'],
+      ['báo cáo', 'doc report', 'doc'],
+
+      // User
+      ['người dùng', 'user account', 'user'],
+      ['tài khoản', 'user account', 'user'],
+      ['đăng nhập', 'user login auth', 'user'],
+      ['quyền', 'permission role', 'user'],
+
+      // Notification
+      ['thông báo', 'notification', 'notification'],
+      ['cảnh báo', 'alert notification', 'notification'],
+
+      // General
+      ['lâm nghiệp', 'forestry forest', 'general'],
+      ['rừng', 'forest', 'general'],
+      ['diện tích', 'area', 'general'],
+      ['số lượng', 'count total number', 'general'],
+      ['tổng', 'sum total', 'general'],
+      ['trong tuần', 'week weekly', 'general'],
+      ['hôm nay', 'today current_date', 'general'],
+      ['tháng này', 'month', 'general'],
+      ['năm nay', 'year', 'general'],
+      ['theo ngày', 'date day', 'general'],
+      ['theo tháng', 'month', 'general'],
+      ['theo năm', 'year', 'general'],
+      ['có bao nhiêu', 'count total', 'general'],
+      ['bao nhiêu', 'count total', 'general'],
+      ['còn bao nhiêu', 'count remaining', 'general'],
+      ['tỷ lệ', 'rate ratio percentage', 'general'],
+      ['xếp hạng', 'rank top', 'general'],
+      ['top', 'rank top', 'general'],
+      ['hàng đầu', 'top rank', 'general'],
+      ['schema', 'schema', 'general'],
+      ['public', 'public', 'general'],
+      ['danh sách', 'list', 'general'],
+    ];
+
+    for (const [vi, en, cat] of seedData) {
+      await client.query(`
+        INSERT INTO schema_dictionary (vi_keywords, en_keywords, category)
+        VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
+      `, [vi, en, cat]);
+    }
+    console.log(`  ✓ schema_dictionary seeded (${seedData.length} entries)`);
+
     // ── Indexes ────────────────────────────────────────────────────────────────
     await client.query(`CREATE INDEX IF NOT EXISTS idx_db_connections_user_id ON db_connections(user_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);`);

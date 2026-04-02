@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Download, Table, BarChart2, Loader2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { apiClient } from '@/lib/api';
@@ -32,6 +32,8 @@ export default function ResultModal({ sql, connectionId, queryName, onClose }: R
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [chartType, setChartType] = useState('table');
+  const [tablePage, setTablePage] = useState(0);
+  const TABLE_PAGE_SIZE = 50;
 
   const run = async () => {
     setLoading(true);
@@ -54,6 +56,13 @@ export default function ResultModal({ sql, connectionId, queryName, onClose }: R
   };
 
   const canChart = result && result.columns.length >= 2;
+
+  useEffect(() => { setTablePage(0); }, [result?.rows]);
+
+  const totalRows = result?.rowCount ?? result?.rows?.length ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalRows / TABLE_PAGE_SIZE));
+  const clampedPage = Math.min(tablePage, totalPages - 1);
+  const paginatedRows = result?.rows?.slice(clampedPage * TABLE_PAGE_SIZE, (clampedPage + 1) * TABLE_PAGE_SIZE) ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -146,7 +155,7 @@ export default function ResultModal({ sql, connectionId, queryName, onClose }: R
                       </tr>
                     </thead>
                     <tbody>
-                      {result.rows.slice(0, 200).map((row, i) => (
+                      {paginatedRows.map((row, i) => (
                         <tr key={i} className={`border-b border-[#21262d] ${i % 2 === 0 ? 'bg-[#0d1117]' : 'bg-[#161b22]'}`}>
                           {result.columns.map(col => (
                             <td key={col} className="px-3 py-1.5 text-[#e6edf3] whitespace-nowrap">
@@ -157,9 +166,26 @@ export default function ResultModal({ sql, connectionId, queryName, onClose }: R
                       ))}
                     </tbody>
                   </table>
-                  {result.rows.length > 200 && (
-                    <p className="text-xs text-[#8b949e] px-3 py-2 bg-[#21262d]">+{result.rows.length - 200} more rows</p>
-                  )}
+                  <div className="flex items-center justify-between px-3 py-1.5 bg-[#21262d]">
+                    <span className="text-xs text-[#8b949e]">
+                      {totalRows} rows · {result.duration_ms}ms
+                      {totalPages > 1 && ` · Trang ${clampedPage + 1}/${totalPages}`}
+                    </span>
+                    {totalPages > 1 && (
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => setTablePage(p => Math.max(0, p - 1))}
+                          disabled={clampedPage === 0}
+                          className="px-2 py-0.5 text-xs rounded border border-[#30363d] text-[#8b949e] hover:text-[#58a6ff] hover:border-[#58a6ff] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >‹ Prev</button>
+                        <button
+                          onClick={() => setTablePage(p => Math.min(totalPages - 1, p + 1))}
+                          disabled={clampedPage >= totalPages - 1}
+                          className="px-2 py-0.5 text-xs rounded border border-[#30363d] text-[#8b949e] hover:text-[#58a6ff] hover:border-[#58a6ff] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >Next ›</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <ChartView columns={result.columns} rows={result.rows} chartType={chartType} />
@@ -178,30 +204,92 @@ function ChartView({ columns, rows, chartType }: { columns: string[]; rows: Reco
   const yKey = columns[1];
   const chartData = data.map(row => ({ [xKey]: String(row[xKey]), [yKey]: Number(row[yKey]) || 0 }));
   const commonProps = { data: chartData, margin: { top: 5, right: 5, left: -10, bottom: 5 } };
+  const tooltipStyle = { background: '#161b22', border: '1px solid #30363d', borderRadius: 8, fontSize: 12 };
 
-  if (chartType === 'bar') {
+  if (chartType === 'line') {
+    return (
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart {...commonProps}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
+          <XAxis dataKey={xKey} tick={{ fill: '#8b949e', fontSize: 10 }} />
+          <YAxis tick={{ fill: '#8b949e', fontSize: 10 }} />
+          <Tooltip contentStyle={tooltipStyle} />
+          <Line type="monotone" dataKey={yKey} stroke="#58a6ff" strokeWidth={2} dot={{ r: 3 }} />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === 'pie') {
+    const pieData = data.slice(0, 8).map(row => ({
+      name: String(row[xKey]),
+      value: Number(row[yKey]) || 0,
+    }));
+    return (
+      <ResponsiveContainer width="100%" height={300}>
+        <PieChart>
+          <Pie
+            data={pieData}
+            dataKey="value"
+            nameKey="name"
+            cx="50%"
+            cy="50%"
+            outerRadius={100}
+            label={({ name, percent }) => `${name} (${((percent ?? 0) * 100).toFixed(0)}%)`}
+            labelLine={false}
+          >
+            {pieData.map((_, i) => (
+              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip contentStyle={tooltipStyle} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === 'area') {
+    return (
+      <ResponsiveContainer width="100%" height={300}>
+        <AreaChart {...commonProps}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
+          <XAxis dataKey={xKey} tick={{ fill: '#8b949e', fontSize: 10 }} />
+          <YAxis tick={{ fill: '#8b949e', fontSize: 10 }} />
+          <Tooltip contentStyle={tooltipStyle} />
+          <Area type="monotone" dataKey={yKey} stroke="#58a6ff" fill="#58a6ff33" />
+        </AreaChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === 'scatter') {
+    const scatterData = data.map(row => ({
+      x: Number(row[columns[0]]) || 0,
+      y: Number(row[columns[1]]) || 0,
+    }));
     return (
       <ResponsiveContainer width="100%" height={300}>
         <BarChart {...commonProps}>
           <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
           <XAxis dataKey={xKey} tick={{ fill: '#8b949e', fontSize: 10 }} />
           <YAxis tick={{ fill: '#8b949e', fontSize: 10 }} />
-          <Tooltip contentStyle={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 8, fontSize: 12 }} />
-          <Bar dataKey={yKey} fill="#58a6ff" radius={[4, 4, 0, 0]} />
+          <Tooltip contentStyle={tooltipStyle} />
+          <Bar dataKey={yKey} fill="#a371f7" radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     );
   }
 
+  // Default: bar
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <AreaChart {...commonProps}>
+      <BarChart {...commonProps}>
         <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
         <XAxis dataKey={xKey} tick={{ fill: '#8b949e', fontSize: 10 }} />
         <YAxis tick={{ fill: '#8b949e', fontSize: 10 }} />
-        <Tooltip contentStyle={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 8, fontSize: 12 }} />
-        <Area type="monotone" dataKey={yKey} stroke="#58a6ff" fill="#58a6ff33" />
-      </AreaChart>
+        <Tooltip contentStyle={tooltipStyle} />
+        <Bar dataKey={yKey} fill="#58a6ff" radius={[4, 4, 0, 0]} />
+      </BarChart>
     </ResponsiveContainer>
   );
 }

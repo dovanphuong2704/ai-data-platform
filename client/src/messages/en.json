@@ -14,7 +14,9 @@
     "export": "Export",
     "back": "Back",
     "retry": "Retry",
-    "noData": "No data"
+    "noData": "No data",
+    "prev": "Prev",
+    "next": "Next"
   },
   "nav": {
     "chat": "Chat",
@@ -197,8 +199,28 @@
     "tabs": {
       "connections": "Database",
       "apiKeys": "API Keys",
+      "dictionary": "Dictionary",
       "password": "Password",
       "profile": "Account"
+    },
+    "dictionary": {
+      "title": "Vietnamese-English Dictionary",
+      "add": "Add Entry",
+      "addTitle": "Add New Entry",
+      "editTitle": "Edit Entry",
+      "edit": "Edit",
+      "delete": "Delete",
+      "viKeywords": "Vietnamese",
+      "enKeywords": "English",
+      "viHint": "Comma-separated. E.g.: điểm cháy, cháy",
+      "enHint": "Comma-separated. E.g.: fire, hotspot",
+      "category": "Category",
+      "actions": "Actions",
+      "noEntries": "No entries yet.",
+      "exportSuccess": "Dictionary exported!",
+      "importSuccess": "Dictionary imported!",
+      "importFailed": "Import failed!",
+      "total": "{count} entries"
     },
     "connections": {
       "title": "Database Connections",

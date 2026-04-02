@@ -18,6 +18,7 @@ import { schedulingRouter } from './routes/scheduling';
 import { alertWebhooksRouter } from './routes/alert-webhooks';
 import { explorerRouter } from './routes/explorer';
 import { quotaRouter } from './routes/quota';
+import { schemaDictRouter } from './routes/schema-dictionary';
 import { scheduler } from './utils/scheduler';
 import { alertRunner } from './utils/alert-runner';
 import { initDB } from './services/db';
@@ -97,6 +98,7 @@ app.use('/api/saved-queries', savedQueriesRouter);
 app.use('/api', schedulingRouter);         // /api/scheduled-queries, /api/alerts
 app.use('/api', alertWebhooksRouter);      // /api/alerts/:id/webhooks
 app.use('/api/quota', quotaRouter);
+app.use('/api/schema-dictionary', schemaDictRouter);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────
 

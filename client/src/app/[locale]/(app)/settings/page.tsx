@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from '@/i18n/routing';
 import { useLocale } from 'next-intl';
-import { Plus, Trash2, CheckCircle2, Database, Key, Loader2, X, Lock, User } from 'lucide-react';
+import { Plus, Trash2, CheckCircle2, Database, Key, Loader2, X, Lock, User, BookOpen, Download, Upload, RefreshCw, Edit3, Check } from 'lucide-react';
 import ConnectionTestButton from '@/components/connection-test-button';
 import { apiClient } from '@/lib/api';
 import { cn, formatDate } from '@/lib/utils';
@@ -24,7 +24,7 @@ export default function SettingsPage() {
     { value: 'claude', label: t('apiKeys.providers.claude') },
   ];
 
-  const [tab, setTab] = useState<'connections' | 'apikeys' | 'password' | 'profile'>('connections');
+  const [tab, setTab] = useState<'connections' | 'apikeys' | 'password' | 'profile' | 'dictionary'>('connections');
 
   // Connections state
   const [connections, setConnections] = useState<DbConnection[]>([]);
@@ -69,7 +69,7 @@ export default function SettingsPage() {
       await loadConnections();
       setShowConnForm(false);
       setConnForm({ profile_name: '', db_host: 'localhost', db_port: '5432', db_name: '', db_user: 'postgres', db_password: '', is_default: false });
-      window.location.href = `/${locale}/chat`;
+      router.push('/chat');
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : tc('error'));
     } finally { setConnSaving(false); }
@@ -111,6 +111,7 @@ export default function SettingsPage() {
         {([
           { id: 'connections' as const, label: t('tabs.connections'), icon: Database },
           { id: 'apikeys' as const, label: t('tabs.apiKeys'), icon: Key },
+          { id: 'dictionary' as const, label: t('tabs.dictionary'), icon: BookOpen },
           { id: 'password' as const, label: t('tabs.password'), icon: Lock },
           { id: 'profile' as const, label: t('tabs.profile'), icon: User },
         ] as const).map(tabItem => (
@@ -276,6 +277,9 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Dictionary tab */}
+      {tab === 'dictionary' && <DictionaryTab />}
+
       {/* Password tab */}
       {tab === 'password' && (
         <div className="glass-card p-5 max-w-md">
@@ -403,5 +407,242 @@ function ProfileTab() {
         {saving ? <Loader2 size={14} className="animate-spin inline" /> : null} {tc('save')}
       </button>
     </form>
+  );
+}
+
+// ─── Dictionary Tab Component ──────────────────────────────────────────────────────────
+function DictionaryTab() {
+  const t = useTranslations('settings.dictionary');
+  const tc = useTranslations('common');
+
+  interface DictEntry {
+    id: number;
+    vi_keywords: string;
+    en_keywords: string;
+    category: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  }
+
+  const [entries, setEntries] = useState<DictEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [filterCategory, setFilterCategory] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [form, setForm] = useState({ vi_keywords: '', en_keywords: '', category: 'general' });
+
+  const LIMIT = 20;
+  const categories = [...new Set(entries.map(e => e.category))].sort();
+
+  useEffect(() => { loadEntries(); }, [page, filterCategory]);
+
+  const loadEntries = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(LIMIT) });
+      if (filterCategory) params.set('category', filterCategory);
+      const { data } = await apiClient.get(`/schema-dictionary?${params}`);
+      setEntries(data.entries);
+      setTotal(data.pagination.total);
+    } catch {} finally { setLoading(false); }
+  };
+
+  const saveEntry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editId) {
+        await apiClient.put(`/schema-dictionary/${editId}`, form);
+      } else {
+        await apiClient.post('/schema-dictionary', form);
+      }
+      setShowAdd(false);
+      setEditId(null);
+      setForm({ vi_keywords: '', en_keywords: '', category: 'general' });
+      await loadEntries();
+    } catch (err) { alert(err instanceof Error ? err.message : tc('error')); }
+    finally { setSaving(false); }
+  };
+
+  const startEdit = (entry: DictEntry) => {
+    setEditId(entry.id);
+    setForm({ vi_keywords: entry.vi_keywords, en_keywords: entry.en_keywords, category: entry.category });
+    setShowAdd(true);
+  };
+
+  const deleteEntry = async (id: number) => {
+    if (!confirm(tc('confirm'))) return;
+    try {
+      await apiClient.delete(`/schema-dictionary/${id}`);
+      setEntries(prev => prev.filter(e => e.id !== id));
+    } catch { alert(tc('error')); }
+  };
+
+  const handleExport = async () => {
+    try {
+      const { data } = await apiClient.get('/schema-dictionary/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'schema-dictionary.json'; a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert(tc('error')); }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const entries = json.entries ?? json;
+      if (!Array.isArray(entries)) throw new Error('Invalid format');
+      const mode = confirm('Replace all existing entries? (OK = Replace, Cancel = Append)') ? 'replace' : 'append';
+      await apiClient.post('/schema-dictionary/import', { mode, entries });
+      await loadEntries();
+      alert(`Imported ${entries.length} entries (${mode})`);
+    } catch (err) { alert(err instanceof Error ? err.message : 'Import failed'); }
+    finally { setImporting(false); e.target.value = ''; }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await apiClient.post('/schema-dictionary/refresh');
+      alert('Cache refreshed!');
+    } catch { alert(tc('error')); }
+    finally { setRefreshing(false); }
+  };
+
+  const totalPages = Math.ceil(total / LIMIT);
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs text-[#8b949e]">
+          <span>{total} entries</span>
+          {filterCategory && <span className="px-2 py-0.5 rounded bg-[#21262d]">filter: {filterCategory}</span>}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={handleRefresh} disabled={refreshing} title="Refresh cache" className="flex items-center gap-1 px-3 py-1.5 text-xs border border-[#30363d] text-[#8b949e] rounded-lg hover:text-[#e6edf3] hover:border-[#58a6ff] transition-colors">
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} /> Refresh
+          </button>
+          <button onClick={handleExport} title="Export JSON" className="flex items-center gap-1 px-3 py-1.5 text-xs border border-[#30363d] text-[#8b949e] rounded-lg hover:text-[#e6edf3] hover:border-[#58a6ff] transition-colors">
+            <Download size={12} /> Export
+          </button>
+          <label className="flex items-center gap-1 px-3 py-1.5 text-xs border border-[#30363d] text-[#8b949e] rounded-lg hover:text-[#e6edf3] hover:border-[#58a6ff] transition-colors cursor-pointer">
+            <Upload size={12} /> {importing ? 'Importing...' : 'Import'}
+            <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+          </label>
+          <button onClick={() => { setShowAdd(!showAdd); setEditId(null); setForm({ vi_keywords: '', en_keywords: '', category: 'general' }); }} className="flex items-center gap-1 gradient-btn px-4 py-1.5 text-xs">
+            <Plus size={12} /> {showAdd ? tc('cancel') : t('add')}
+          </button>
+        </div>
+      </div>
+
+      {/* Category filter */}
+      {categories.length > 0 && (
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={() => { setFilterCategory(''); setPage(1); }} className={cn('px-2 py-1 text-xs rounded-full border', !filterCategory ? 'border-[#58a6ff] text-[#58a6ff]' : 'border-[#30363d] text-[#8b949e] hover:border-[#58a6ff]')}>All</button>
+          {categories.map(c => (
+            <button key={c} onClick={() => { setFilterCategory(c); setPage(1); }} className={cn('px-2 py-1 text-xs rounded-full border', filterCategory === c ? 'border-[#58a6ff] text-[#58a6ff]' : 'border-[#30363d] text-[#8b949e] hover:border-[#58a6ff]')}>{c}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Add/Edit form */}
+      {showAdd && (
+        <form onSubmit={saveEntry} className="glass-card p-5 space-y-3 animate-fade-in">
+          <h3 className="text-sm font-semibold text-[#e6edf3]">{editId ? t('editTitle') : t('addTitle')}</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-[#8b949e] mb-1">{t('viKeywords')} <span className="text-[#f85149]">*</span></label>
+              <input value={form.vi_keywords} onChange={e => setForm(p => ({ ...p, vi_keywords: e.target.value }))} required placeholder="điểm cháy, cháy, đám cháy" className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none" />
+              <p className="text-[10px] text-[#8b949e] mt-1">{t('viHint')}</p>
+            </div>
+            <div>
+              <label className="block text-xs text-[#8b949e] mb-1">{t('enKeywords')} <span className="text-[#f85149]">*</span></label>
+              <input value={form.en_keywords} onChange={e => setForm(p => ({ ...p, en_keywords: e.target.value }))} required placeholder="fire alert hotspot" className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none" />
+              <p className="text-[10px] text-[#8b949e] mt-1">{t('enHint')}</p>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#8b949e] mb-1">{t('category')}</label>
+            <input value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))} placeholder="general" className="w-full bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded-lg px-3 py-2 text-sm focus:border-[#58a6ff] focus:outline-none" />
+          </div>
+          <div className="flex gap-3">
+            <button type="submit" disabled={saving} className="gradient-btn px-5 py-2 text-sm disabled:opacity-50">
+              {saving ? <Loader2 size={12} className="animate-spin inline" /> : <Check size={12} className="inline" />} {tc('save')}
+            </button>
+            <button type="button" onClick={() => { setShowAdd(false); setEditId(null); }} className="px-5 py-2 text-sm border border-[#30363d] text-[#8b949e] rounded-lg hover:text-[#e6edf3] hover:border-[#30363d] transition-colors">{tc('cancel')}</button>
+          </div>
+        </form>
+      )}
+
+      {/* Table */}
+      {loading ? (
+        <div className="text-sm text-[#8b949e]"><Loader2 size={14} className="animate-spin inline" /> {tc('loading')}</div>
+      ) : entries.length === 0 ? (
+        <div className="text-center py-12 text-[#8b949e]">
+          <BookOpen size={40} className="mx-auto mb-3 text-[#30363d]" />
+          <p className="text-sm">{t('noEntries')}</p>
+        </div>
+      ) : (
+        <div className="glass-card overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[#21262d] text-left">
+                <th className="px-4 py-2.5 text-xs font-medium text-[#8b949e]">{t('viKeywords')}</th>
+                <th className="px-4 py-2.5 text-xs font-medium text-[#8b949e]">{t('enKeywords')}</th>
+                <th className="px-4 py-2.5 text-xs font-medium text-[#8b949e]">{t('category')}</th>
+                <th className="px-4 py-2.5 text-xs font-medium text-[#8b949e] text-right">{t('actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map(entry => (
+                <tr key={entry.id} className="border-t border-[#21262d] hover:bg-[#161b22]">
+                  <td className="px-4 py-2.5 text-[#e6edf3]">
+                    <span className="text-xs font-mono bg-[#0d1117] px-2 py-1 rounded">{entry.vi_keywords}</span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className="text-xs font-mono text-[#58a6ff] bg-[#0d1117] px-2 py-1 rounded">{entry.en_keywords}</span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-[#21262d] text-[#8b949e]">{entry.category}</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button onClick={() => startEdit(entry)} className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#8b949e] hover:text-[#58a6ff] transition-colors">
+                      <Edit3 size={12} /> {t('edit')}
+                    </button>
+                    <button onClick={() => deleteEntry(entry.id)} className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#8b949e] hover:text-[#f85149] transition-colors ml-2">
+                      <Trash2 size={12} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-xs text-[#8b949e]">
+          <span>Page {page} / {totalPages}</span>
+          <div className="flex gap-2">
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1.5 border border-[#30363d] rounded-lg hover:border-[#58a6ff] disabled:opacity-30 transition-colors">{tc('prev')}</button>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1.5 border border-[#30363d] rounded-lg hover:border-[#58a6ff] disabled:opacity-30 transition-colors">{tc('next')}</button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
