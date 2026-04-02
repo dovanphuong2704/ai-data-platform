@@ -1,13 +1,13 @@
 import createMiddleware from 'next-intl/middleware';
 import { routing } from './src/i18n/routing';
 
-const intlMiddleware = createMiddleware(routing);
-
-export default intlMiddleware;
+export default createMiddleware(routing);
 
 export const config = {
-  // Bắt tất cả path ngoại trừ file tĩnh và API
+  // Bắt root '/' + '/en/...' + '/vi/...' + các trang khác (loại trừ file tĩnh và API)
   matcher: [
-    '/((?!api|_next|_vercel|.*\\..*).*)'
-  ]
+    '/',
+    '/(en|vi)/:path*',
+    '/((?!api|_next|_vercel|.*\\..*).*)',
+  ],
 };
