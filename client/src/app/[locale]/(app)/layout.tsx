@@ -52,8 +52,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     { href: '/chat', labelKey: 'chat', icon: MessageSquare },
     { href: '/dashboard', labelKey: 'dashboard', icon: LayoutDashboard },
     { href: '/saved-queries', labelKey: 'savedQueries', icon: Bookmark },
-    { href: '/alerts', labelKey: 'alerts', icon: Bell },
-    { href: '/scheduled-queries', labelKey: 'scheduledQueries', icon: Clock },
+    // { href: '/alerts', labelKey: 'alerts', icon: Bell },
+    // { href: '/scheduled-queries', labelKey: 'scheduledQueries', icon: Clock },
     { href: '/explorer', labelKey: 'explorer', icon: Database },
     { href: '/settings', labelKey: 'settings', icon: Settings },
   ];
