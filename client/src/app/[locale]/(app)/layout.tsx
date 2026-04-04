@@ -17,6 +17,7 @@ import {
   Clock,
   User,
   Globe,
+  Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth-provider';
@@ -55,6 +56,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     // { href: '/alerts', labelKey: 'alerts', icon: Bell },
     // { href: '/scheduled-queries', labelKey: 'scheduledQueries', icon: Clock },
     { href: '/explorer', labelKey: 'explorer', icon: Database },
+    { href: '/ai-training', labelKey: 'aiTraining', icon: Sparkles },
     { href: '/settings', labelKey: 'settings', icon: Settings },
   ];
 

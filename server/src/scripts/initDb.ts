@@ -33,6 +33,10 @@ async function main(): Promise<void> {
   console.log('🔧 Initializing database schema…\n');
 
   try {
+    // Enable pgvector extension
+    await client.query('CREATE EXTENSION IF NOT EXISTS vector;');
+    console.log('  ✓ pgvector extension');
+
     // ── 1. users ────────────────────────────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -349,9 +353,116 @@ async function main(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);`);
     console.log('  ✓ indexes');
 
+    // ── 15. vanna_training_data (RAG) ─────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vanna_training_data (
+        id            SERIAL PRIMARY KEY,
+        connection_id INTEGER,
+        question_vi   TEXT    NOT NULL,
+        sql           TEXT    NOT NULL,
+        embedding     vector(768),
+        source        VARCHAR(50) DEFAULT 'auto',
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('  ✓ vanna_training_data');
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_vanna_training_conn
+        ON vanna_training_data(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_vanna_training_embedding_hnsw
+        ON vanna_training_data USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64);
+    `);
+
+    // ── 16. db_schema_snapshots ─────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS db_schema_snapshots (
+        id            SERIAL PRIMARY KEY,
+        connection_id INTEGER UNIQUE,
+        schema_json   JSONB    NOT NULL,
+        schema_text   TEXT     NOT NULL,
+        table_count   INT      NOT NULL,
+        column_count  INT      NOT NULL,
+        version_hash  TEXT     NOT NULL,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('  ✓ db_schema_snapshots');
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_schema_snap_conn ON db_schema_snapshots(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_schema_snap_hash ON db_schema_snapshots(version_hash);
+    `);
+
+    // ── 17. vanna_docs (Business rules RAG) ─────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vanna_docs (
+        id            SERIAL PRIMARY KEY,
+        connection_id INTEGER,
+        category      VARCHAR(50)  NOT NULL DEFAULT 'general',
+        title         TEXT         NOT NULL,
+        content       TEXT         NOT NULL,
+        embedding     vector(768),
+        is_active     BOOLEAN      DEFAULT TRUE,
+        created_at    TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ  DEFAULT NOW()
+      );
+    `);
+    console.log('  ✓ vanna_docs');
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_vanna_docs_conn ON vanna_docs(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_vanna_docs_cat  ON vanna_docs(category);
+      CREATE INDEX IF NOT EXISTS idx_vanna_docs_embedding_hnsw
+        ON vanna_docs USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64);
+    `);
+
+    // ── 18. db_table_summaries ──────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS db_table_summaries (
+        id              SERIAL PRIMARY KEY,
+        connection_id   INTEGER,
+        table_schema    VARCHAR(100) NOT NULL,
+        table_name      VARCHAR(100) NOT NULL,
+        summary_text    TEXT         NOT NULL,
+        column_list     TEXT         NOT NULL,
+        fk_hint         TEXT         NOT NULL DEFAULT '',
+        embedding       vector(768),
+        created_at      TIMESTAMPTZ  DEFAULT NOW(),
+        UNIQUE(connection_id, table_schema, table_name)
+      );
+    `);
+    console.log('  ✓ db_table_summaries');
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_table_summ_conn ON db_table_summaries(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_table_summaries_embedding_hnsw
+        ON db_table_summaries USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64);
+    `);
+
+    // ── 19. db_table_menus ─────────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS db_table_menus (
+        id            SERIAL PRIMARY KEY,
+        connection_id INTEGER UNIQUE,
+        menu_json     JSONB    NOT NULL,
+        total_tables  INT      NOT NULL,
+        generated_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('  ✓ db_table_menus');
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_table_menus_conn ON db_table_menus(connection_id);
+    `);
+
     console.log('\n✅ Database schema initialized successfully!');
-    console.log('   Total tables: 13');
-    console.log('   Total indexes: 11');
+    console.log('   Total tables: 19');
+    console.log('   Total indexes: 17 (incl. 4 HNSW)');
   } catch (err) {
     console.error('\n❌ Failed to initialize schema:', err);
     process.exit(1);

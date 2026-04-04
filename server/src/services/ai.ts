@@ -99,7 +99,7 @@ export function getChatModelConfig(
   if (!modelOverride) {
     throw new Error(`No model specified for provider "${provider}". Please select a model from the dropdown.`);
   }
-  return { modelName: modelOverride, temperature: DEFAULT_TEMPERATURE, maxTokens: DEFAULT_MAX_TOKENS };
+  return { modelName: modelOverride ?? undefined, temperature: DEFAULT_TEMPERATURE, maxTokens: DEFAULT_MAX_TOKENS };
 }
 
 // ─── Model Factory ─────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ export function createChatModel(
     case 'claude': {
       return new ChatAnthropic({
         apiKey,
-        model: modelName ?? 'claude-sonnet-4-20250514',
+        model: modelName ?? 'claude-3-5-sonnet-20241022',
         temperature,
         maxTokens,
         streaming: config.streaming ?? false,
@@ -186,6 +186,7 @@ export function createChatModel(
 export interface ChatInput {
   provider: string;
   apiKey: string;
+  model?: string;
   systemMessage?: string;
   messages: Array<{ role: string; content: string }>;
   temperature?: number;
@@ -201,7 +202,7 @@ export interface ChatOutput {
  * Convenience wrapper: send a list of messages to a provider and get a string response.
  */
 export async function chatWithModel(input: ChatInput): Promise<ChatOutput> {
-  const config = getChatModelConfig(input.provider, input.apiKey);
+  const config = getChatModelConfig(input.provider, input.apiKey, input.model);
   const mergedConfig: ChatModelConfig = {
     ...config,
     ...(input.temperature !== undefined && { temperature: input.temperature }),

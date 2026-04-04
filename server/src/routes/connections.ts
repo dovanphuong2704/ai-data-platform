@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { appPool } from '../services/db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { invalidateSchemaCache } from './chat';
+import { seedConnection } from '../services/connection-seeder';
 
 export const connectionsRouter = Router();
 
@@ -76,7 +77,22 @@ connectionsRouter.post('/', async (req: AuthRequest, res) => {
        RETURNING id, user_id, profile_name, db_host, db_port, db_name, db_user, is_default, created_at`,
       [req.userId, data.profile_name || null, data.db_host, data.db_port, data.db_name, data.db_user, data.db_password, data.is_default ?? false]
     );
-    res.status(201).json({ connection: result.rows[0] });
+
+    const newConn = result.rows[0];
+
+    // Auto-seed training data in background (non-blocking)
+    appPool.query(
+      `SELECT api_key, provider FROM api_keys ORDER BY is_default DESC, id DESC LIMIT 1`
+    ).then(keyRow => {
+      if (keyRow.rows.length > 0) {
+        const { api_key, provider } = keyRow.rows[0] as { api_key: string; provider: string };
+        seedConnection(newConn.id, api_key, provider)
+          .then(r => console.log(`[seeder] conn ${newConn.id} done:`, r))
+          .catch(e => console.error(`[seeder] conn ${newConn.id} failed:`, e));
+      }
+    }).catch(() => {}); // ignore key lookup errors
+
+    res.status(201).json({ connection: newConn, seeding: 'started' });
   } catch (err) {
     if (err instanceof z.ZodError) {
       res.status(400).json({ error: 'Validation error', details: err.issues });
@@ -125,6 +141,21 @@ connectionsRouter.put('/:id', async (req: AuthRequest, res) => {
     }
 
     invalidateSchemaCache(Number(id));
+
+    // Reseed if credentials or host changed (full refresh)
+    const changed = data.db_host || data.db_port || data.db_name || data.db_user || data.db_password;
+    if (changed) {
+      appPool.query(`SELECT api_key, provider FROM api_keys ORDER BY is_default DESC, id DESC LIMIT 1`)
+        .then(keyRow => {
+          if (keyRow.rows.length > 0) {
+            const { api_key, provider } = keyRow.rows[0] as { api_key: string; provider: string };
+            seedConnection(Number(id), api_key, provider)
+              .then(r => console.log(`[seeder] conn ${id} reseeded:`, r))
+              .catch(e => console.error(`[seeder] conn ${id} reseed failed:`, e));
+          }
+        }).catch(() => {});
+    }
+
     res.json({ connection: result.rows[0] });
   } catch (err) {
     if (err instanceof z.ZodError) {

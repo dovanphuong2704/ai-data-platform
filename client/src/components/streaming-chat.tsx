@@ -393,6 +393,7 @@ function MessageBubble({ msg }: { msg: StreamMessage }) {
   const [tableExpanded, setTableExpanded] = useState(false);
   const [tableFullscreen, setTableFullscreen] = useState(false);
   const TABLE_PAGE_SIZE = 20;
+  const showSqlToggle = process.env.NEXT_PUBLIC_SHOW_SQL_TOGGLE !== 'false';
 
   // Reset to page 0 when message changes (new result)
   useEffect(() => { setSqlExpanded(false); setTablePage(0); setTableExpanded(false); setTableFullscreen(false); }, [msg.id]);
@@ -407,7 +408,7 @@ function MessageBubble({ msg }: { msg: StreamMessage }) {
       <div className={cn('max-w-[75%] rounded-2xl px-4 py-3 text-sm', msg.role === 'user' ? 'bg-[#1c3a5e]' : 'bg-[#161b22] border border-[#30363d]')}>
         <p className="whitespace-pre-wrap">{msg.content}</p>
 
-        {msg.sql && (
+        {msg.sql && showSqlToggle && (
           <div className="mt-2 rounded-lg border border-[#30363d] overflow-hidden">
             {/* Header bar */}
             <div className="flex items-center justify-between bg-[#1c2128] px-3 py-1.5 border-b border-[#30363d]">

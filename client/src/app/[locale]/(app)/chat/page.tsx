@@ -146,6 +146,8 @@ function ChartRenderer({ chartType, columns, rows }: { chartType: string; column
   }
 }
 
+const SHOW_SQL_TOGGLE = process.env.NEXT_PUBLIC_SHOW_SQL_TOGGLE !== 'false';
+
 export default function ChatPage() {
   const t = useTranslations('chat');
   const tc = useTranslations('common');
@@ -541,119 +543,119 @@ export default function ChatPage() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
-            <div className="w-16 h-16 rounded-2xl gradient-btn flex items-center justify-center pulse-glow">
-              <BarChart2 size={32} className="text-white" />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold text-[#e6edf3]">{t('welcome')}</h3>
-              <p className="text-sm text-[#8b949e] mt-1">{t('welcomeSub')}</p>
-            </div>
-            <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-              {SUGGESTIONS.map(s => (
-                <button
-                  key={s}
-                  onClick={() => sendMessage(s)}
-                  className="text-xs px-3 py-1.5 rounded-full border border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#58a6ff] transition-colors"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {messages.map(msg => (
-          <div key={msg.id} className={cn('flex gap-3 animate-fade-in', msg.role === 'user' ? 'flex-row-reverse' : 'flex-row')}>
-            <div className={cn('max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed', msg.role === 'user' ? 'bg-[#1c3a5e] text-[#e6edf3]' : 'bg-[#161b22] border border-[#30363d] text-[#e6edf3]')}>
-              <p className="whitespace-pre-wrap">{msg.content}</p>
-
-              {msg.sql && (
-                <div className="mt-3 rounded-lg border border-[#30363d] overflow-hidden">
-                  {/* Header bar */}
-                  <div className="flex items-center justify-between bg-[#1c2128] px-3 py-1.5 border-b border-[#30363d]">
-                    <div className="flex items-center gap-2">
-                      {!msg.pinned && (
-                        <button onClick={() => pinToDashboard(msg)} title={t('pinToDashboard')} className="text-[#8b949e] hover:text-[#58a6ff] transition-colors">
-                          <Pin size={12} />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => { setSaveModalSql(msg.sql ?? null); }}
-                        title={t('saveQuery')}
-                        className="text-[#8b949e] hover:text-[#3fb950] transition-colors"
-                      >
-                        <Bookmark size={12} />
-                      </button>
-                    </div>
-                    <button
-                      onClick={() => setSqlExpandedStates(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
-                      className="flex items-center gap-1.5 text-xs text-[#8b949e] hover:text-[#58a6ff] transition-colors"
-                    >
-                      {sqlExpandedStates[msg.id] ? '▲ Ẩn SQL' : '▼ Xem SQL'}
-                    </button>
-                  </div>
-                  {/* SQL body — hidden by default */}
-                  <div className={cn('bg-[#0d1117]', !sqlExpandedStates[msg.id] ? 'hidden' : '')}>
-                    <pre className="text-xs font-mono text-[#58a6ff] px-3 py-2 whitespace-pre-wrap break-all overflow-x-auto">
-                      {msg.sql}
-                    </pre>
-                  </div>
-                </div>
-              )}
-
-              {msg.chartType && msg.tableData && (
-                <div className="mt-3">
-                  <ChartRenderer chartType={msg.chartType} columns={msg.columns || []} rows={msg.tableData} />
-                  <div className="flex gap-2 mt-2">
-                    {msg.tableData.length > 0 && (
-                      <>
-                        <button onClick={() => exportToCSV(msg.columns || [], msg.tableData || [])} className="text-xs flex items-center gap-1 text-[#8b949e] hover:text-[#58a6ff]">
-                          <Table size={12} /> {t('exportCsv')}
-                        </button>
-                        <button onClick={() => exportToJSON(msg.tableData || [])} className="text-xs text-[#8b949e] hover:text-[#58a6ff]">
-                          {t('exportJson')}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {msg.tableData && !msg.chartType && (
-                <div className="mt-3">
-                  <ResultTable columns={msg.columns || []} rows={msg.tableData} />
-                  <div className="flex gap-2 mt-2">
-                    <button onClick={() => exportToCSV(msg.columns || [], msg.tableData || [])} className="text-xs flex items-center gap-1 text-[#8b949e] hover:text-[#58a6ff]">
-                      <Table size={12} /> {t('exportCsv')}
-                    </button>
-                    <button onClick={() => exportToJSON(msg.tableData || [])} className="text-xs text-[#8b949e] hover:text-[#58a6ff]">{t('exportJson')}</button>
-                  </div>
-                </div>
-              )}
-
-              {msg.sqlError && (
-                <p className="mt-2 text-xs text-[#f85149] bg-[#f85149]/10 px-2 py-1 rounded inline-block">SQL Error: {msg.sqlError}</p>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {loading && (
-          <div className="flex gap-3 animate-fade-in">
-            <div className="w-8 h-8 rounded-full bg-[#21262d] flex items-center justify-center flex-shrink-0">
-              <BarChart2 size={16} className="text-[#58a6ff]" />
-            </div>
-            <div className="bg-[#161b22] border border-[#30363d] rounded-2xl px-4 py-3">
-              <div className="flex items-center gap-2 text-sm text-[#8b949e]">
-                <Loader2 size={14} className="animate-spin" />
-                {t('thinking')}
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl gradient-btn flex items-center justify-center pulse-glow">
+                <BarChart2 size={32} className="text-white" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-[#e6edf3]">{t('welcome')}</h3>
+                <p className="text-sm text-[#8b949e] mt-1">{t('welcomeSub')}</p>
+              </div>
+              <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+                {SUGGESTIONS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => sendMessage(s)}
+                    className="text-xs px-3 py-1.5 rounded-full border border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#58a6ff] transition-colors"
+                  >
+                    {s}
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
+          )}
+
+          {messages.map(msg => (
+            <div key={msg.id} className={cn('flex gap-3 animate-fade-in', msg.role === 'user' ? 'flex-row-reverse' : 'flex-row')}>
+              <div className={cn('max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed', msg.role === 'user' ? 'bg-[#1c3a5e] text-[#e6edf3]' : 'bg-[#161b22] border border-[#30363d] text-[#e6edf3]')}>
+                <p className="whitespace-pre-wrap">{msg.content}</p>
+
+                {msg.sql && SHOW_SQL_TOGGLE && (
+                  <div className="mt-3 rounded-lg border border-[#30363d] overflow-hidden">
+                    {/* Header bar */}
+                    <div className="flex items-center justify-between bg-[#1c2128] px-3 py-1.5 border-b border-[#30363d]">
+                      <div className="flex items-center gap-2">
+                        {!msg.pinned && (
+                          <button onClick={() => pinToDashboard(msg)} title={t('pinToDashboard')} className="text-[#8b949e] hover:text-[#58a6ff] transition-colors">
+                            <Pin size={12} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { setSaveModalSql(msg.sql ?? null); }}
+                          title={t('saveQuery')}
+                          className="text-[#8b949e] hover:text-[#3fb950] transition-colors"
+                        >
+                          <Bookmark size={12} />
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => setSqlExpandedStates(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
+                        className="flex items-center gap-1.5 text-xs text-[#8b949e] hover:text-[#58a6ff] transition-colors"
+                      >
+                        {sqlExpandedStates[msg.id] ? '▲ Ẩn SQL' : '▼ Xem SQL'}
+                      </button>
+                    </div>
+                    {/* SQL body — hidden by default */}
+                    <div className={cn('bg-[#0d1117]', !sqlExpandedStates[msg.id] ? 'hidden' : '')}>
+                      <pre className="text-xs font-mono text-[#58a6ff] px-3 py-2 whitespace-pre-wrap break-all overflow-x-auto">
+                        {msg.sql}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+
+                {msg.chartType && msg.tableData && (
+                  <div className="mt-3">
+                    <ChartRenderer chartType={msg.chartType} columns={msg.columns || []} rows={msg.tableData} />
+                    <div className="flex gap-2 mt-2">
+                      {msg.tableData.length > 0 && (
+                        <>
+                          <button onClick={() => exportToCSV(msg.columns || [], msg.tableData || [])} className="text-xs flex items-center gap-1 text-[#8b949e] hover:text-[#58a6ff]">
+                            <Table size={12} /> {t('exportCsv')}
+                          </button>
+                          <button onClick={() => exportToJSON(msg.tableData || [])} className="text-xs text-[#8b949e] hover:text-[#58a6ff]">
+                            {t('exportJson')}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {msg.tableData && !msg.chartType && (
+                  <div className="mt-3">
+                    <ResultTable columns={msg.columns || []} rows={msg.tableData} />
+                    <div className="flex gap-2 mt-2">
+                      <button onClick={() => exportToCSV(msg.columns || [], msg.tableData || [])} className="text-xs flex items-center gap-1 text-[#8b949e] hover:text-[#58a6ff]">
+                        <Table size={12} /> {t('exportCsv')}
+                      </button>
+                      <button onClick={() => exportToJSON(msg.tableData || [])} className="text-xs text-[#8b949e] hover:text-[#58a6ff]">{t('exportJson')}</button>
+                    </div>
+                  </div>
+                )}
+
+                {msg.sqlError && (
+                  <p className="mt-2 text-xs text-[#f85149] bg-[#f85149]/10 px-2 py-1 rounded inline-block">SQL Error: {msg.sqlError}</p>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="flex gap-3 animate-fade-in">
+              <div className="w-8 h-8 rounded-full bg-[#21262d] flex items-center justify-center flex-shrink-0">
+                <BarChart2 size={16} className="text-[#58a6ff]" />
+              </div>
+              <div className="bg-[#161b22] border border-[#30363d] rounded-2xl px-4 py-3">
+                <div className="flex items-center gap-2 text-sm text-[#8b949e]">
+                  <Loader2 size={14} className="animate-spin" />
+                  {t('thinking')}
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
         </div>
 
         {/* SQL History Panel */}

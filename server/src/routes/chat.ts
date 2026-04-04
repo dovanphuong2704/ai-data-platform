@@ -7,6 +7,30 @@ import { getDict } from './schema-dictionary';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validateSQL, executeSafeQuery } from '../utils/sqlValidator';
 import { createChatModel, getChatModelConfig, fetchProviderModels } from '../services/ai';
+import { getSimilarSQL, buildRagContext } from '../services/vanna-rag';
+import { getRelevantDocs, buildDocsContext } from '../services/vanna-docs';
+import { retrieveTopTables } from '../services/table-retrieval';
+import {
+  getCachedSchemaWithText,
+  saveSchemaSnapshot,
+  buildSchemaTextFromEnriched,
+  getTableDDL,
+  buildFocusedSchemaFromTables,
+  inferLogicalFKs,
+} from '../services/schema-store';
+import {
+  selectTables,
+  needsMenuRefresh,
+  type SelectedTable,
+} from '../services/table-selector';
+import {
+  buildTableMenuFromPool,
+  saveTableMenu,
+  getCachedTableMenu,
+  invalidateTableMenu,
+  type TableMenuItem,
+} from '../services/table-menu';
+import { generateSQL } from '../services/sql-generator';
 import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 
@@ -326,7 +350,9 @@ function buildFocusedSchemaDescription(
     const colList = table.columns
       .map(c => {
         const desc = c.description ? ` — ${c.description}` : '';
-        return `  - ${c.column_name} (${c.data_type})${desc}`;
+        const isCodeCol = /_code$|_id$/.test(c.column_name);
+        const codeWarning = isCodeCol ? ' ⚠️ MÃ ĐỊNH DANH - KHÔNG lọc tên tiếng Việt ở đây. PHẢI JOIN bảng danh mục.' : '';
+        return `  - ${c.column_name} (${c.data_type})${desc}${codeWarning}`;
       })
       .join('\n');
 
@@ -429,7 +455,7 @@ async function getConnectionDetails(
 }
 
 async function fetchSchema(pool: Pool): Promise<EnrichedSchema> {
-  // Fetch columns with descriptions
+  // Fetch columns with PostgreSQL column descriptions
   const colResult = await pool.query<SchemaColumn>(`
     SELECT
       c.table_schema,
@@ -437,14 +463,16 @@ async function fetchSchema(pool: Pool): Promise<EnrichedSchema> {
       c.column_name,
       c.data_type,
       c.column_default,
-      NULL AS description
+      col_description(pc.oid, c.ordinal_position::int) AS description
     FROM information_schema.columns c
     JOIN information_schema.tables t
       ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+    LEFT JOIN pg_class pc
+      ON pc.relname = c.table_name
+     AND pc.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = c.table_schema)
     WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-      AND t.table_type = 'BASE TABLE'
+      
     ORDER BY c.table_schema, c.table_name, c.ordinal_position
-    LIMIT 500
   `);
 
   // Fetch FK constraints
@@ -485,9 +513,24 @@ async function fetchSchema(pool: Pool): Promise<EnrichedSchema> {
     }
   }
 
+  // Infer logical FKs from naming convention
+  const logicalFKs = inferLogicalFKs(colResult.rows);
+
+  // Merge: real FKs first, then logical FKs (deduplicate by key)
+  const seenFK = new Set<string>();
+  const allFKs: FKInfo[] = [...fkResult.rows];
+
+  for (const lfk of logicalFKs) {
+    const key = `${lfk.table_schema}.${lfk.table_name}.${lfk.column_name}->${lfk.foreign_table_schema}.${lfk.foreign_table_name}.${lfk.foreign_column_name}`;
+    if (!seenFK.has(key)) {
+      seenFK.add(key);
+      allFKs.push(lfk);
+    }
+  }
+
   return {
     columns: colResult.rows,
-    foreignKeys: fkResult.rows,
+    foreignKeys: allFKs,
   };
 }
 
@@ -533,7 +576,7 @@ function buildSchemaDescription(enriched: EnrichedSchema): string {
   return lines.join('\n');
 }
 
-function buildSystemPrompt(schema: string, recentHistory?: string): string {
+function buildSystemPrompt(schema: string, recentHistory?: string, ragContext?: string, docsContext?: string): string {
   return `Bạn là Chuyên gia phân tích dữ liệu SQL PostgreSQL. Nhiệm vụ của bạn là chuyển đổi câu hỏi của người dùng thành truy vấn SQL chính xác.
 
 ### 🛑 QUY TẮC BẮT BUỘC (TUÂN THỦ TUYỆT ĐỐI):
@@ -556,6 +599,8 @@ function buildSystemPrompt(schema: string, recentHistory?: string): string {
    - KHÔNG BAO GIỜ thêm LIMIT vào câu SQL.
    - Nếu người dùng chỉ định giới hạn số bản ghi (LIMIT), hãy tuân thủ.
    - Sử dụng các Foreign Keys đã cung cấp để thực hiện JOIN chính xác.
+   - Quan trọng: Khi thấy column có suffix _code hoặc _id (ví dụ: commune_code, district_code, tree_spec_code), PHẢI JOIN đến bảng reference tương ứng (ví dụ: commune, district, tree_specie) để lấy tên hiển thị, không bao giờ chỉ GROUP BY theo _code.
+   - Nghiêm cấm tuyệt đối: KHÔNG dùng ILIKE/LIKE/= với từ tiếng Việt (keo, cháy, tự nhiên...) trên cột _code hoặc _id. Chỉ dùng ILIKE trên cột chứa TÊN (thường có suffix _name, _def, _verna, _latin).
 
 4. **ĐỊNH DẠNG PHẢN HỒI JSON (DUY NHẤT):**
    Trả về JSON nguyên bản, không bao bọc trong code block (không dùng markdown), không thêm văn bản thừa.
@@ -583,6 +628,8 @@ function buildSystemPrompt(schema: string, recentHistory?: string): string {
 
 ---
 ${recentHistory ? `📜 NGỮ CẢNH HỘI THOẠI GẦN ĐÂY:\n${recentHistory}\n` : ''}
+${ragContext ? `\n${ragContext}` : ''}
+${docsContext ? docsContext : ''}
 
 ### 🗄️ DANH SÁCH SCHEMA CHI TIẾT (DÙNG CHÍNH XÁC TÊN DƯỚI ĐÂY):
 ${schema}`;
@@ -657,12 +704,27 @@ interface AIResponse {
 }
 
 async function parseAIResponse(raw: string): Promise<AIResponse> {
-  try {
-    const cleaned = raw.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-    return JSON.parse(cleaned) as AIResponse;
-  } catch {
-    return { type: 'answer', analysis: raw };
+  // 1. Extract SQL from [sql]...[/sql] tags first
+  const sqlMatch = raw.match(/\[sql\]([\s\S]*?)\[\/sql\]/i);
+  const sql = sqlMatch ? sqlMatch[1].trim().replace(/;$/, '') : null;
+
+  // 2. Try to parse JSON part (everything after [/sql] if present)
+  const jsonCandidate = sqlMatch ? raw.slice(raw.lastIndexOf('[/sql]') + 6).trim() : raw.trim();
+
+  if (jsonCandidate.startsWith('{') || jsonCandidate.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(jsonCandidate.replace(/^```json\s*/i, '').replace(/```$/i, ''));
+      return { ...parsed, sql: sql ?? parsed.sql };
+    } catch {
+      // JSON parse failed — return SQL only if found
+    }
   }
+
+  // 3. Fallback: return SQL if found, otherwise treat whole thing as answer
+  if (sql) {
+    return { type: 'answer', sql };
+  }
+  return { type: 'answer', analysis: raw };
 }
 
 const VALID_CHART_TYPES = ['bar', 'line', 'pie', 'area', 'scatter'];
@@ -808,34 +870,79 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
       return;
     }
 
-    // ── Step 2: Single pool for schema + execute ──
+    // ── Step 2: Setup connection pool ──
     const connectionString = `postgresql://${connection.db_user}:${connection.db_password}@${connection.db_host}:${connection.db_port}/${connection.db_name}`;
     const pool = await createConnectionPool(connectionString);
 
-    let enrichedSchema: EnrichedSchema = { columns: [], foreignKeys: [] };
-    try {
-      const cacheKey = `${connection.id}:${connection.db_host}:${connection.db_name}`;
-      enrichedSchema = getCachedSchema(cacheKey) ?? await fetchSchema(pool);
-      if (!getCachedSchema(cacheKey)) setCachedSchema(cacheKey, enrichedSchema);
-    } finally {
+    // ── Step 3: Fetch / cache schema + table menu ──
+    const cacheKey = `${connection.id}:${connection.db_host}:${connection.db_name}`;
+    let enrichedSchema = getCachedSchema(cacheKey);
+
+    if (!enrichedSchema) {
+      const cached = await getCachedSchemaWithText(connection.id, message);
+      if (cached) {
+        enrichedSchema = cached.schema;
+        setCachedSchema(cacheKey, enrichedSchema);
+      }
+    }
+
+    if (!enrichedSchema) {
+      try {
+        enrichedSchema = await fetchSchema(pool);
+        setCachedSchema(cacheKey, enrichedSchema);
+        const schemaText = buildSchemaTextFromEnriched(enrichedSchema, message);
+        saveSchemaSnapshot(connection.id, enrichedSchema, schemaText).catch(err =>
+          console.warn('[schema-store] save failed:', err)
+        );
+      } finally {
+        await pool.end();
+      }
+    } else {
       await pool.end();
     }
 
-    // Build schema index and find relevant tables via semantic search
-    const schemaIndex = getOrBuildIndex(connection.id, enrichedSchema);
-    const relevantTables = await searchSchema(schemaIndex, message, 8);
-    const schemaDescription = buildFocusedSchemaDescription(relevantTables, schemaIndex.tables, message);
+    // ── Step 4: Get or build table menu ──
+    let menuItems = await getCachedTableMenu(connection.id);
 
-    // Build recent history summary for system prompt context
+    if (!menuItems) {
+      const menuPool = await createConnectionPool(connectionString);
+      try {
+        menuItems = await buildTableMenuFromPool(menuPool);
+        await saveTableMenu(connection.id, menuItems);
+        console.log(`[table-menu] Built menu: ${menuItems.length} tables`);
+      } finally {
+        await menuPool.end();
+      }
+    }
+
+    // ── Step 5: LLM 1 — Receptionist: Select relevant tables ──
+    const { selectedTables, reasoning: tableSelectionReason, method: tableMethod } = await selectTables(
+      message,
+      menuItems,
+      connection.id,
+      keyRecord.provider,
+      keyRecord.api_key,
+      8,
+    );
+
+    console.log(`[table-selector] Selected ${selectedTables.length} tables (${tableMethod}): ${
+      selectedTables.map(t => `${t.schema}.${t.table}`).join(', ')
+    }`);
+
+    // Build recent history summary
     let recentHistory: string | undefined;
+    const previousQuestions: string[] = [];
     if (chatHistory && chatHistory.length > 0) {
       recentHistory = chatHistory.slice(-20).map(m =>
         `${m.role === 'user' ? 'User' : 'AI'}: ${m.content.slice(0, 200)}`
       ).join('\n');
+      // Extract previous user questions for context
+      chatHistory.slice(0, -1).forEach(m => {
+        if (m.role === 'user') previousQuestions.push(m.content);
+      });
     }
 
-    const systemPrompt = buildSystemPrompt(schemaDescription, recentHistory);
-
+    // ── Step 6: LLM 2 — Chef: Generate SQL from concentrated prompt ──
     let sqlResult: {
       columns: string[]; rows: Record<string, unknown>[];
       rowCount: number; duration_ms: number; limited: boolean;
@@ -847,40 +954,54 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
     let initialChartType: string | undefined;
 
     try {
-      const modelConfig = getChatModelConfig(keyRecord.provider, keyRecord.api_key, model);
-      const chatModel = createChatModel(keyRecord.provider, keyRecord.api_key, modelConfig);
+      const generationResult = await generateSQL(
+        message,
+        selectedTables,
+        menuItems,
+        enrichedSchema,
+        connection.id,
+        keyRecord.api_key,
+        keyRecord.provider,
+        model,
+        previousQuestions,
+      );
 
-      const langChainMessages: (HumanMessage | SystemMessage | AIMessage)[] = [
-        new SystemMessage({ content: systemPrompt }),
-      ];
+      executedSql = generationResult.sql;
+      console.log(`[sql-generator] SQL generated (RAG: ${generationResult.ragExamplesUsed}, Docs: ${generationResult.docsUsed})`);
 
-      if (chatHistory && chatHistory.length > 0) {
-        for (const msg of chatHistory) {
-          if (msg.role === 'user') langChainMessages.push(new HumanMessage({ content: msg.content }));
-          else if (msg.role === 'assistant') langChainMessages.push(new AIMessage({ content: msg.content }));
-          else if (msg.role === 'system') langChainMessages.push(new SystemMessage({ content: msg.content }));
-        }
-      }
+      // Use concentrated system prompt for retry logic
+      const focusedDDL = selectedTables.map(t =>
+        `${t.schema}.${t.table}: ${t.reason}`
+      ).join(', ');
 
-      langChainMessages.push(new HumanMessage({ content: message }));
+      const focusedSchema = `Bảng được chọn: ${focusedDDL}`;
 
-      const response = await chatModel.invoke(langChainMessages);
-      const responseContent = typeof response === 'string' ? response : (response as { content?: string }).content;
+      // Build concentrated system prompt for SQL execution/retry
+      const systemPrompt = buildSystemPrompt(
+        focusedSchema,
+        recentHistory,
+        '', // RAG context already baked into generationResult.sql via generateSQL
+        '',
+      );
 
-      const parsed = await parseAIResponse(responseContent as string);
-      finalType = parsed.type ?? 'answer';
-      finalAnalysis = parsed.analysis;
+      // Parse the generated SQL (Chef already returned structured output)
+      const parsed = await parseAIResponse(generationResult.sql);
+      finalType = parsed.type ?? 'table';
+      finalAnalysis = parsed.analysis ?? generationResult.explanation;
       initialChartType = parsed.chartType;
 
-      if (parsed.sql) {
+      if (parsed.sql || generationResult.sql) {
         const execPool = await createConnectionPool(connectionString);
         try {
-          // Attempt with retry (up to 2 times) if SQL fails
           const retryResult = await attemptSqlWithRetry(
             execPool,
-            parsed.sql,
+            parsed.sql ?? generationResult.sql ?? '',
             systemPrompt,
-            chatModel,
+            createChatModel(
+              keyRecord.provider,
+              keyRecord.api_key,
+              getChatModelConfig(keyRecord.provider, keyRecord.api_key, model),
+            ),
             2,
             req.userId!,
             connection.id,
@@ -891,15 +1012,14 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
             executedSql = retryResult.sql ?? null;
           } else {
             sqlError = retryResult.error ?? 'SQL execution failed';
-            executedSql = (retryResult.sql ?? parsed.sql) ?? null;
+            executedSql = (retryResult.sql ?? generationResult.sql) ?? null;
           }
 
-          // Log to sql_query_history
           appPool.query(
             `INSERT INTO sql_query_history
              (user_id, connection_id, sql, status, duration_ms, rows_returned, error_message)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [req.userId, connection.id, executedSql ?? parsed.sql ?? '', sqlResult ? 'success' : 'error',
+            [req.userId, connection.id, executedSql ?? '', sqlResult ? 'success' : 'error',
             sqlResult?.duration_ms ?? null, sqlResult?.rowCount ?? null, sqlError]
           ).then(() => cleanupHistory(req.userId!)).catch(err => console.error('History log error:', err));
         } finally {
@@ -932,6 +1052,10 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
       sqlResult,
       sqlError,
       sessionId: resolvedSessionId,
+      // Two-step flow metadata
+      selectedTables,
+      tableSelectionReason,
+      tableMethod,
     });
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -1013,24 +1137,107 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
       res.end(); cleanup(); return;
     }
 
-    sendSSE(res, 'status', { message: 'Fetching schema...' });
+    sendSSE(res, 'status', { message: 'Retrieving relevant tables...' });
 
-    // ── Step 2: Single pool + schema cache ──
-    const connectionString = `postgresql://${connection.db_user}:${connection.db_password}@${connection.db_host}:${connection.db_port}/${connection.db_name}`;
-    poolRef = await createConnectionPool(connectionString);
+    // Always create pool early (needed for attemptSqlWithRetry regardless of table retrieval result)
+    const connStr = `postgresql://${connection.db_user}:${connection.db_password}@${connection.db_host}:${connection.db_port}/${connection.db_name}`;
+    poolRef = await createConnectionPool(connStr);
 
-    const cacheKey = `${connection.id}:${connection.db_host}:${connection.db_name}`;
-    let enrichedSchema = getCachedSchema(cacheKey);
+    // ── Phase 1: Table Retrieval — Top 20 tables via vector search ──
+    const topTables = await retrieveTopTables(message, connection.id, keyRecord.api_key, 20, 0.15);
+    sendSSE(res, 'status', {
+      message: topTables.length
+        ? `Top ${topTables.length} tables: ${topTables.map(t => `${t.table_schema}.${t.table_name}`).join(', ')}`
+        : 'No table summaries found, falling back to full schema...'
+    });
 
-    if (!enrichedSchema) {
-      enrichedSchema = await fetchSchema(poolRef);
-      setCachedSchema(cacheKey, enrichedSchema);
+    // ── Phase 2: DDL — only Top 5 tables' schema (with data types) ──
+    let schemaDescription = '';
+    if (topTables.length > 0) {
+      // Fetch DDL with column types from snapshot
+      // Include FK target tables too (they might not be in topTables)
+      const snapshot = await getTableDDL(
+        connection.id,
+        topTables.map(t => ({ schema: t.table_schema, name: t.table_name }))
+      );
+
+      // Also fetch FK target tables that are NOT in topTables
+      const fkTargetKeys = new Set<string>();
+      for (const fk of snapshot.foreignKeys) {
+        fkTargetKeys.add(`${fk.foreign_table_schema}.${fk.foreign_table_name}`);
+      }
+      const extraTables = [...fkTargetKeys].filter(k => {
+        const [s, n] = k.split('.');
+        return !topTables.some(t => t.table_schema === s && t.table_name === n);
+      });
+      const extraDdl = extraTables.length
+        ? await getTableDDL(connection.id, extraTables.map(k => { const [s, n] = k.split('.'); return { schema: s, name: n }; }))
+        : { columns: [], foreignKeys: [] };
+
+      // Merge
+      const ddl = {
+        columns: [...snapshot.columns, ...extraDdl.columns],
+        foreignKeys: [...snapshot.foreignKeys, ...extraDdl.foreignKeys],
+      };
+      const schemaLines: string[] = [];
+      const schemas = [...new Set(topTables.map(t => t.table_schema))];
+      schemaLines.push(`Cac SCHEMA: ${schemas.join(', ')}`);
+
+      const colsByTable: Record<string, typeof ddl.columns> = {};
+      for (const c of ddl.columns) {
+        const key = `${c.table_schema}.${c.table_name}`;
+        if (!colsByTable[key]) colsByTable[key] = [];
+        colsByTable[key].push(c);
+      }
+      const fksByTable: Record<string, typeof ddl.foreignKeys> = {};
+      for (const fk of ddl.foreignKeys) {
+        const key = `${fk.table_schema}.${fk.table_name}`;
+        if (!fksByTable[key]) fksByTable[key] = [];
+        fksByTable[key].push(fk);
+      }
+
+      for (const t of topTables) {
+        const key = `${t.table_schema}.${t.table_name}`;
+        schemaLines.push(`${t.table_schema}.${t.table_name}:`);
+        const fks = fksByTable[key] ?? [];
+        for (const fk of fks) {
+          schemaLines.push(`  FK: ${fk.column_name} → ${fk.foreign_table_schema}.${fk.foreign_table_name}.${fk.foreign_column_name}`);
+        }
+        const cols = colsByTable[key] ?? [];
+        for (const c of cols) {
+          const desc = c.description ? ` — ${c.description}` : '';
+          // Cách 2: "Biển báo nguy hiểm" tự động cho cột _code/_id
+          const isCodeCol = /_code$|_id$/.test(c.column_name);
+          const codeWarning = isCodeCol ? ' ⚠️ MÃ ĐỊNH DANH - KHÔNG lọc tên tiếng Việt ở đây. PHẢI JOIN bảng danh mục.' : '';
+          schemaLines.push(`  - ${c.column_name} (${c.data_type})${desc}${codeWarning}`);
+        }
+        if (t.summary_text) schemaLines.push(`  Mo ta: ${t.summary_text}`);
+        schemaLines.push('');
+      }
+      schemaDescription = schemaLines.join('\n');
+    } else {
+      // Fallback: full schema via snapshot — close pool from topTables path, reopen
+      await poolRef.end();
+      poolRef = await createConnectionPool(connStr);
+      const cacheKey = `${connection.id}:${connection.db_host}:${connection.db_name}`;
+      let enrichedSchema = getCachedSchema(cacheKey);
+      if (!enrichedSchema) {
+        const cached = await getCachedSchemaWithText(connection.id, message);
+        if (cached) { enrichedSchema = cached.schema; setCachedSchema(cacheKey, enrichedSchema); }
+      }
+      if (!enrichedSchema) {
+        enrichedSchema = await fetchSchema(poolRef);
+        setCachedSchema(cacheKey, enrichedSchema);
+        saveSchemaSnapshot(connection.id, enrichedSchema, buildSchemaTextFromEnriched(enrichedSchema, message))
+          .catch(err => console.warn('[schema-store] save failed:', err));
+      }
+      const schemaIndex = getOrBuildIndex(connection.id, enrichedSchema);
+      const relevantTables = await searchSchema(schemaIndex, message, 8);
+      schemaDescription = buildFocusedSchemaDescription(relevantTables, schemaIndex.tables, message);
     }
 
-    // ── Step 2b: Fetch chat history for context ──
+    // ── Phase 2b: Fetch chat history for context ──
     const chatHistory = await getChatHistory(userId, resolvedSessionId);
-
-    // Build recent history summary for system prompt
     let recentHistory: string | undefined;
     if (chatHistory && chatHistory.length > 0) {
       recentHistory = chatHistory.slice(-20).map(m =>
@@ -1038,11 +1245,24 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
       ).join('\n');
     }
 
-    // Semantic search: find relevant tables based on user question
-    const schemaIndex = getOrBuildIndex(connection.id, enrichedSchema);
-    const relevantTables = await searchSchema(schemaIndex, message, 8);
-    const schemaDescription = buildFocusedSchemaDescription(relevantTables, schemaIndex.tables, message);
-    const systemPrompt = buildSystemPrompt(schemaDescription, recentHistory);
+    // ── Phase 3: RAG — VI→SQL examples + business docs ──
+    let ragContext = '';
+    let docsContext = '';
+    try {
+      const [similarExamples, docs] = await Promise.all([
+        getSimilarSQL(message, connection.id, keyRecord.api_key, 5, 0.55),
+        getRelevantDocs(message, connection.id, keyRecord.api_key, 3, 0.5),
+      ]);
+      if (similarExamples.length > 0) ragContext = buildRagContext(similarExamples);
+      if (docs.length > 0) {
+        docsContext = buildDocsContext(docs);
+        sendSSE(res, 'status', { message: `Found ${similarExamples.length} SQL examples, ${docs.length} docs...` });
+      }
+    } catch (ragErr) {
+      console.warn('[RAG] retrieval failed, continuing:', ragErr);
+    }
+
+    const systemPrompt = buildSystemPrompt(schemaDescription, recentHistory, ragContext, docsContext);
 
     sendSSE(res, 'thinking', { message: 'Generating SQL...' });
 
@@ -1082,7 +1302,13 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
     }
 
     const responseContent = fullResponse.trim();
-    const parsed = await parseAIResponse(responseContent);
+    // Strip thinking/thinking blocks before parsing
+    const cleanResponse = responseContent
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/<\/think>/gi, '')
+      .replace(/<think>/gi, '')
+      .trim();
+    const parsed = await parseAIResponse(cleanResponse);
 
     // ── Step 4: Execute SQL with retry on the SAME pool ──
     let sqlExecResult: Awaited<ReturnType<typeof executeQueryOnPool>> | null = null;

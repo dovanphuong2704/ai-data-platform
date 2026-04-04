@@ -19,6 +19,16 @@ import { alertWebhooksRouter } from './routes/alert-webhooks';
 import { explorerRouter } from './routes/explorer';
 import { quotaRouter } from './routes/quota';
 import { schemaDictRouter } from './routes/schema-dictionary';
+import { vannaRouter } from './routes/vanna-rag';
+import { schemaSnapshotsRouter } from './routes/schema-snapshots';
+import { vannaDocsRouter } from './routes/vanna-docs';
+import { trainingConnectionsRouter } from './routes/training-connections';
+import { trainingMenusRouter } from './routes/training-menus';
+import { trainingSummariesRouter } from './routes/training-summaries';
+import { trainingForeignKeysRouter } from './routes/training-foreign-keys';
+import { trainingExamplesRouter } from './routes/training-examples';
+import { trainingSnapshotsRouter as trainingSnapsRouter } from './routes/training-snapshots';
+import { trainingSeedRouter } from './routes/training-seed';
 import { scheduler } from './utils/scheduler';
 import { alertRunner } from './utils/alert-runner';
 import { initDB } from './services/db';
@@ -99,6 +109,16 @@ app.use('/api', schedulingRouter);         // /api/scheduled-queries, /api/alert
 app.use('/api', alertWebhooksRouter);      // /api/alerts/:id/webhooks
 app.use('/api/quota', quotaRouter);
 app.use('/api/schema-dictionary', schemaDictRouter);
+app.use('/api/vanna-rag', vannaRouter);
+app.use('/api/schema-snapshots', schemaSnapshotsRouter);
+app.use('/api/vanna-docs', vannaDocsRouter);
+app.use('/api/training/connections', trainingConnectionsRouter);
+app.use('/api/training/menus', trainingMenusRouter);
+app.use('/api/training/summaries', trainingSummariesRouter);
+app.use('/api/training/foreign-keys', trainingForeignKeysRouter);
+app.use('/api/training/examples', trainingExamplesRouter);
+app.use('/api/training/snapshots', trainingSnapsRouter);
+app.use('/api/training/seed', trainingSeedRouter);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────
 
