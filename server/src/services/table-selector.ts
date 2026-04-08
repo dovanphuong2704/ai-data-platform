@@ -139,17 +139,46 @@ async function selectTablesWithLLM(
 
   const response = await Promise.race([llmPromise, timeoutPromise]);
 
-  // Parse JSON from response
+  // Parse JSON from response — safe incremental parsing
   const raw = response.content;
-  const jsonMatch = raw.match(/```json\n?([\s\S]*?)\n?```/)
-    ?? raw.match(/\{[\s\S]*"selectedTables"[\s\S]*\}/)
-    ?? raw.match(/\{[\s\S]*\}/);
 
-  if (!jsonMatch) {
+  // Strip markdown code fences
+  const stripped = raw
+    .replace(/```(?:json)?\s*/gi, '')
+    .replace(/```\s*$/gi, '')
+    .trim();
+
+  // Find first '{' and incrementally find the matching closing '}'
+  const firstBraceIdx = stripped.indexOf('{');
+  if (firstBraceIdx === -1) {
+    throw new Error('Could not find JSON object in LLM response');
+  }
+
+  // Try to find matching closing brace by counting nesting level
+  let depth = 0;
+  let endIdx = -1;
+  for (let i = firstBraceIdx; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) { endIdx = i + 1; break; }
+    }
+  }
+
+  if (endIdx === -1) {
+    throw new Error('Could not find matching closing brace');
+  }
+
+  const candidate = stripped.slice(firstBraceIdx, endIdx);
+  let parsedJson: Record<string, unknown>;
+  try {
+    parsedJson = JSON.parse(candidate);
+  } catch {
     throw new Error('Could not parse JSON from LLM response');
   }
 
-  const parsed = JSON.parse(jsonMatch[1] ?? jsonMatch[0]) as {
+  const parsed = parsedJson as {
     selectedTables: Array<{ schema: string; table: string; reason?: string }>;
     reasoning?: string;
   };

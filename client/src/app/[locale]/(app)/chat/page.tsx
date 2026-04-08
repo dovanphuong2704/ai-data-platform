@@ -196,7 +196,8 @@ export default function ChatPage() {
       const msgs: ChatMessage[] = (data.messages ?? []).map((m, i) => ({
         id: String(m.id),
         role: m.role as 'user' | 'assistant',
-        content: m.content,
+        // Strip [sql]...[/sql] tags from stored content (legacy / parse fallback)
+        content: m.content.replace(/\[sql\][\s\S]*?\[\/sql\]/gi, '').trim() || m.content,
         sql: m.sql,
         tableData: (m.sql_result as { rows?: Record<string, unknown>[] })?.rows,
         columns: (m.sql_result as { columns?: string[] })?.columns,
@@ -330,10 +331,18 @@ export default function ChatPage() {
       });
 
       setActiveQueryId(data.queryId ?? null);
+      // Strip [sql]...[/sql] blocks from response so content is clean narrative only
+      const rawResp = data.response ?? data.analysis ?? 'No response';
+      const parts = rawResp.split(/\[sql\]|\[\/sql\]/gi);
+      const cleanContent = parts
+        .filter((_, i) => i % 2 === 0)
+        .join('\n')
+        .replace(/^\s+|\s+$/g, '')
+        .trim() || rawResp;
       const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: data.response ?? data.analysis ?? 'No response',
+        content: cleanContent,
         sql: data.sql || undefined,
         chartType: data.chartType || undefined,
         columns: data.sqlResult?.columns,

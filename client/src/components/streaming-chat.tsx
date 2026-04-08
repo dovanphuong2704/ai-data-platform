@@ -35,6 +35,10 @@ interface StreamMessage {
   duration_ms?: number;
   rowCount?: number;
   error?: string;
+  truncated?: boolean;
+  totalRows?: number;
+  fromCache?: boolean;
+  maskedColumns?: string[];
 }
 
 type StreamPhase = 'idle' | 'status' | 'thinking' | 'token' | 'sql' | 'result' | 'analysis' | 'done';
@@ -49,13 +53,13 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
   const [currentSql, setCurrentSql] = useState('');
   const [currentTokens, setCurrentTokens] = useState('');
   const [currentAnalysis, setCurrentAnalysis] = useState('');
-  const [currentResult, setCurrentResult] = useState<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number; duration_ms: number } | null>(null);
+  const [currentResult, setCurrentResult] = useState<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number; duration_ms: number; truncated?: boolean; totalRows?: number; fromCache?: boolean; maskedColumns?: string[] } | null>(null);
   const [error, setError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const finalResultRef = useRef<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number; duration_ms: number } | null>(null);
+  const finalResultRef = useRef<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number; duration_ms: number; truncated?: boolean; totalRows?: number; fromCache?: boolean; maskedColumns?: string[] } | null>(null);
   const finalSqlRef = useRef('');
   const finalTokensRef = useRef('');
   const finalAnalysisRef = useRef('');
@@ -169,6 +173,10 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
                 rows: chunk.rows ?? [],
                 rowCount: chunk.rowCount ?? 0,
                 duration_ms: chunk.duration_ms ?? 0,
+                truncated: chunk.truncated ?? false,
+                totalRows: chunk.totalRows ?? chunk.rowCount ?? 0,
+                fromCache: chunk.fromCache ?? false,
+                maskedColumns: chunk.maskedColumns ?? [],
               };
               setCurrentResult(result);
               finalResultRef.current = result;
@@ -254,6 +262,10 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
         duration_ms: (finalResultRef.current as { duration_ms: number } | null)?.duration_ms,
         rowCount: (finalResultRef.current as { rowCount: number } | null)?.rowCount,
         error: finalErrorRef.current || undefined,
+        truncated: (finalResultRef.current as { truncated?: boolean } | null)?.truncated,
+        totalRows: (finalResultRef.current as { totalRows?: number } | null)?.totalRows,
+        fromCache: (finalResultRef.current as { fromCache?: boolean } | null)?.fromCache,
+        maskedColumns: (finalResultRef.current as { maskedColumns?: string[] } | null)?.maskedColumns,
       };
       setMessages(prev => [...prev, assistantMsg]);
       setPhase('idle');
@@ -294,7 +306,7 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
         {messages.map(msg => (
-          <MessageBubble key={msg.id} msg={msg} />
+          <MessageBubble key={msg.id} msg={msg} connectionId={connectionId} />
         ))}
 
         {/* Live streaming preview */}
@@ -327,6 +339,17 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
                 <div>
                   <p className="text-xs text-[#3fb950] mb-1">
                     ✓ {currentResult.rowCount} row(s) in {currentResult.duration_ms}ms
+                    {currentResult.truncated && (
+                      <span className="ml-2 text-[#d29922]">
+                        (truncated from {currentResult.totalRows} total)
+                      </span>
+                    )}
+                    {currentResult.fromCache && (
+                      <span className="ml-2 text-[#a371f7]">· from cache ⚡</span>
+                    )}
+                    {currentResult.maskedColumns && currentResult.maskedColumns.length > 0 && (
+                      <span className="ml-2 text-[#f85149]">· 🔒 masked: {currentResult.maskedColumns.join(', ')}</span>
+                    )}
                   </p>
                   <div className="overflow-x-auto max-h-40">
                     <table className="w-full text-xs">
@@ -387,16 +410,18 @@ export default function StreamingChat({ connectionId, aiProvider, apiKeyId, mode
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg }: { msg: StreamMessage }) {
+function MessageBubble({ msg, connectionId }: { msg: StreamMessage; connectionId?: number }) {
   const [sqlExpanded, setSqlExpanded] = useState(false);
   const [tablePage, setTablePage] = useState(0);
   const [tableExpanded, setTableExpanded] = useState(false);
   const [tableFullscreen, setTableFullscreen] = useState(false);
+  const [explainPlan, setExplainPlan] = useState<{ sql?: string; plan?: string } | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
   const TABLE_PAGE_SIZE = 20;
   const showSqlToggle = process.env.NEXT_PUBLIC_SHOW_SQL_TOGGLE !== 'false';
 
   // Reset to page 0 when message changes (new result)
-  useEffect(() => { setSqlExpanded(false); setTablePage(0); setTableExpanded(false); setTableFullscreen(false); }, [msg.id]);
+  useEffect(() => { setSqlExpanded(false); setTablePage(0); setTableExpanded(false); setTableFullscreen(false); setExplainPlan(null); }, [msg.id]);
 
   const totalRows = msg.rowCount ?? msg.tableData?.length ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalRows / TABLE_PAGE_SIZE));
@@ -413,15 +438,41 @@ function MessageBubble({ msg }: { msg: StreamMessage }) {
             {/* Header bar */}
             <div className="flex items-center justify-between bg-[#1c2128] px-3 py-1.5 border-b border-[#30363d]">
               <span className="text-xs font-medium text-[#8b949e]">SQL</span>
-              <button
-                onClick={() => setSqlExpanded(v => !v)}
-                className="flex items-center gap-1.5 text-xs text-[#8b949e] hover:text-[#58a6ff] transition-colors"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={cn('transition-transform', sqlExpanded ? 'rotate-90' : '')}>
-                  <path d="M9 18l6-6-6-6"/>
-                </svg>
-                {sqlExpanded ? '▲ Ẩn SQL' : '▼ Xem SQL'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSqlExpanded(v => !v)}
+                  className="flex items-center gap-1.5 text-xs text-[#8b949e] hover:text-[#58a6ff] transition-colors"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={cn('transition-transform', sqlExpanded ? 'rotate-90' : '')}>
+                    <path d="M9 18l6-6-6-6"/>
+                  </svg>
+                  {sqlExpanded ? '▲ Ẩn SQL' : '▼ Xem SQL'}
+                </button>
+                {msg.sql && (
+                  <button
+                    onClick={async () => {
+                      if (explainPlan?.sql === msg.sql) { setExplainPlan(null); return; }
+                      if (!connectionId) return;
+                      setExplainLoading(true);
+                      try {
+                        const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+                        const res = await fetch(`${API_BASE}/api/chat/explain-plan`, {
+                          method: 'POST',
+                          credentials: 'include',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ sql: msg.sql, connectionId }),
+                        });
+                        const data = await res.json();
+                        setExplainPlan({ sql: msg.sql, plan: data.plan ?? data.error });
+                      } catch { setExplainPlan({ sql: msg.sql, plan: 'Failed to load plan' }); }
+                      finally { setExplainLoading(false); }
+                    }}
+                    className="text-xs text-[#8b949e] hover:text-[#a371f7] transition-colors"
+                  >
+                    {explainLoading ? '⏳...' : '📊 Explain'}
+                  </button>
+                )}
+              </div>
             </div>
             {/* Code body — hidden by default */}
             <div className={cn('bg-[#0d1117] overflow-x-auto', !sqlExpanded ? 'hidden' : '')}>
@@ -437,6 +488,30 @@ function MessageBubble({ msg }: { msg: StreamMessage }) {
             {msg.chartType && (
               <StreamingChart chartType={msg.chartType} columns={msg.columns} rows={msg.tableData} />
             )}
+            {msg.truncated && (
+              <div className="text-xs text-[#d29922] bg-[#d29922]/10 px-3 py-2 rounded border border-[#d29922]/30">
+                ⚠️ Kết quả bị cắt ngắn. {msg.totalRows ?? msg.rowCount} dòng tổng cộng.
+                Thử thêm bộ lọc để thu hẹp kết quả.
+              </div>
+            )}
+            {msg.maskedColumns && msg.maskedColumns.length > 0 && (
+              <div className="text-xs text-[#f85149] bg-[#f85149]/10 px-3 py-2 rounded border border-[#f85149]/30">
+                🔒 Đã ẩn {msg.maskedColumns.length} cột nhạy cảm: {msg.maskedColumns.join(', ')}
+              </div>
+            )}
+
+            {explainPlan?.sql === msg.sql && (
+              <div className="mt-2 rounded-lg border border-[#a371f7]/30 bg-[#a371f7]/5 overflow-hidden">
+                <div className="flex items-center justify-between bg-[#1c2128] px-3 py-1.5 border-b border-[#a371f7]/30">
+                  <span className="text-xs font-medium text-[#a371f7]">📊 Explain Plan</span>
+                  <button onClick={() => setExplainPlan(null)} className="text-xs text-[#8b949e] hover:text-[#e6edf3]">✕ Đóng</button>
+                </div>
+                <pre className="text-xs font-mono text-[#a371f7] px-3 py-2 whitespace-pre-wrap overflow-x-auto max-h-48">
+                  {explainPlan?.plan ?? '...'}
+                </pre>
+              </div>
+            )}
+
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>

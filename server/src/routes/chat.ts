@@ -6,6 +6,7 @@ import { cleanupHistory } from './history';
 import { getDict } from './schema-dictionary';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validateSQL, executeSafeQuery } from '../utils/sqlValidator';
+import { applyDataMasking } from '../utils/data-masker';
 import { createChatModel, getChatModelConfig, fetchProviderModels } from '../services/ai';
 import { getSimilarSQL, buildRagContext } from '../services/vanna-rag';
 import { getRelevantDocs, buildDocsContext } from '../services/vanna-docs';
@@ -33,6 +34,9 @@ import {
 import { generateSQL } from '../services/sql-generator';
 import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { embedText } from '../services/embeddings';
+import { checkSemanticCache, saveSemanticCache } from '../services/semantic-cache';
+import { rerankTablesWithLLM } from '../services/table-reranker';
 
 export const chatRouter = Router();
 
@@ -577,7 +581,14 @@ function buildSchemaDescription(enriched: EnrichedSchema): string {
 }
 
 function buildSystemPrompt(schema: string, recentHistory?: string, ragContext?: string, docsContext?: string): string {
-  return `Bạn là Chuyên gia phân tích dữ liệu SQL PostgreSQL. Nhiệm vụ của bạn là chuyển đổi câu hỏi của người dùng thành truy vấn SQL chính xác.
+  return `Bạn là Trợ lý AI phân tích dữ liệu thân thiện. Bạn giỏi viết SQL PostgreSQL và luôn trả lời bằng tiếng Việt có dấu, rõ ràng và hữu ích.
+
+### 🎯 PHONG CÁCH TRẢ LỜI:
+- LUÔN trả lời THÂN THIỆN, nhiệt tình và chuyên nghiệp.
+- Khi người dùng hỏi dữ liệu → phân tích kết quả, chỉ ra xu hướng, bất thường hoặc điểm đáng chú ý.
+- Khi người dùng chào hỏi → đáp lại lịch sự rồi hỏi họ cần hỗ trợ gì.
+- KHÔNG bao giờ trả lời đơn thuần bằng số liệu thô. LUÔN có lời phân tích kèm theo.
+- Dùng emoji phù hợp (📊, 🔥, 📍, etc.) để response sinh động hơn.
 
 ### 🛑 QUY TẮC BẮT BUỘC (TUÂN THỦ TUYỆT ĐỐI):
 
@@ -596,15 +607,18 @@ function buildSystemPrompt(schema: string, recentHistory?: string, ragContext?: 
 3. **QUY TẮC TRUY VẤN SQL:**
    - LUÔN dùng prefix: schema_name.table_name.
    - CHỈ thực hiện lệnh SELECT. Cấm các lệnh thay đổi dữ liệu (INSERT, DELETE, DROP...).
-   - KHÔNG BAO GIỜ thêm LIMIT vào câu SQL.
+   - NÊN thêm LIMIT N vào cuối SQL để tránh trả về quá nhiều dòng. Nếu user không chỉ định → thêm LIMIT 1000.
    - Nếu người dùng chỉ định giới hạn số bản ghi (LIMIT), hãy tuân thủ.
    - Sử dụng các Foreign Keys đã cung cấp để thực hiện JOIN chính xác.
    - Quan trọng: Khi thấy column có suffix _code hoặc _id (ví dụ: commune_code, district_code, tree_spec_code), PHẢI JOIN đến bảng reference tương ứng (ví dụ: commune, district, tree_specie) để lấy tên hiển thị, không bao giờ chỉ GROUP BY theo _code.
    - Nghiêm cấm tuyệt đối: KHÔNG dùng ILIKE/LIKE/= với từ tiếng Việt (keo, cháy, tự nhiên...) trên cột _code hoặc _id. Chỉ dùng ILIKE trên cột chứa TÊN (thường có suffix _name, _def, _verna, _latin).
 
-4. **ĐỊNH DẠNG PHẢN HỒI JSON (DUY NHẤT):**
-   Trả về JSON nguyên bản, không bao bọc trong code block (không dùng markdown), không thêm văn bản thừa.
-   {"type":"table"|"chart"|"analysis"|"answer", "sql":"Câu lệnh SQL", "chartType":"bar"|"line"|"pie"|"area", "chartLabel":"Tiêu đề", "analysis":"Giải thích kết quả bằng tiếng Việt (2-5 câu), chỉ ra xu hướng hoặc bất thường."}
+4. **ĐỊNH DẠNG PHẢN HỒI — VIẾT TỰ NHIÊN, KHÔNG CẦN JSON:**
+   Sau khi viết SQL xong, HÃY VIẾT 1-3 CÂU phân tích kết quả bằng tiếng Việt có dấu, như một người trợ lý thật sự.
+   - Gợi ý xu hướng, bất thường, hoặc điểm đáng chú ý.
+   - Không cần trả JSON, chỉ viết text thường.
+   - Ví dụ: "Dưới đây là kết quả... Có thể thấy...", "Đáng chú ý là...", "Tổng cộng có X bản ghi..."
+   - Nếu là lỗi → giải thích lỗi và gợi ý cách sửa.
 
 5. **QUY TẮC CHART TYPE:**
    - "bar": so sánh categories (tháng, loại, nhóm, vùng)
@@ -635,6 +649,261 @@ ${docsContext ? docsContext : ''}
 ${schema}`;
 }
 
+function buildFixPrompt(
+  type: 'SYNTAX' | 'DATABASE' | 'COLUMN',
+  errorMessage: string,
+  currentSql: string,
+  ddlText: string,
+  userQuestion: string,
+  _schemaJson?: { columns: Array<{ table_schema: string; table_name: string; column_name: string }> },
+): string {
+  if (type === 'DATABASE') {
+    return [
+      `=== LAN SUA LAN THU ${type} ===`,
+      `Cau hoi nguoi dung: "${userQuestion}"`,
+      "",
+      `=== LOI TU DATABASE ===`,
+      errorMessage,
+      "",
+      `=== SQL HIEN TAI ===`,
+      currentSql,
+      "",
+      `=== DDL (SCHEMA) ===`,
+      ddlText || '(khong co DDL)',
+      "",
+      `=== YEU CAU SUA SQL ===`,
+      "- Doc loi tu Database phia tren",
+      "- Neu loi 'column X does not exist':",
+      "  * Neu SQL dung column name nhung DDL khong co -> column do thuoc BANG DANH MUC, can JOIN qua cot _code",
+      "  * VD: tree_spec_name -> tim tree_spec_code trong bang chinh -> JOIN tree_specie ON tree_spec_code = code",
+      "  * VD: commune_name -> tim commune_code -> JOIN commune ON commune_code = code",
+      "  * Tim cot _code trong bang chinh, JOIN den bang danh muc bang code = code de lay ten",
+      "- Neu loi 'table X does not exist': kiem tra lai ten bang",
+      "- Neu loi syntax: kiem tra dau cham phay, dau ngoac, tu khoa SQL",
+      "- Giu nguyen cac phan DUNG cua SQL",
+      "- Tra ve SQL da sua trong tag [sql]...[sql]",
+    ].join('\n');
+  }
+  if (type === 'COLUMN') {
+    return [
+      `=== LAN SUA LAN THU ${type} ===`,
+      `Cau hoi nguoi dung: "${userQuestion}"`,
+      "",
+      `=== LOI COLUMN KHONG TON TAI ===`,
+      errorMessage,
+      "",
+      `=== SQL HIEN TAI ===`,
+      currentSql,
+      "",
+      `=== YEU CAU ===`,
+      "- Mot so cot trong SQL khong ton tai trong schema",
+      "- Hay tim cot _code tuong ung trong cung bang de JOIN den bang danh muc lay ten",
+      "- Neu column co _name/_desc ma khong ton tai -> tim cot _code cung bang -> JOIN den bang danh muc",
+      "- Giu nguyen cac phan DUNG",
+      "- Tra ve SQL da sua trong tag [sql]...[sql]",
+    ].join('\n');
+  }
+  return [
+    `=== LOI SYNTAX SQL ===`,
+    errorMessage,
+    "",
+    `=== SQL HIEN TAI ===`,
+    currentSql,
+    "",
+    'Hay sua SQL tren va tra ve ket qua trong tag [sql]...[sql]',
+  ].join('\n');
+}
+
+// ── Column validator (pre-execution) ──────────────────────────────────────────
+
+const SQL_KEYWORDS = new Set([
+  'SELECT', 'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'JOIN', 'LEFT', 'RIGHT',
+  'INNER', 'OUTER', 'FULL', 'CROSS', 'AND', 'NOT', 'WITH', 'AS', 'ON',
+  'IN', 'IS', 'NULL', 'LIMIT', 'OFFSET', 'UNION', 'CASE', 'WHEN',
+  'THEN', 'ELSE', 'END', 'EXISTS', 'BETWEEN', 'LIKE', 'ASC', 'DESC',
+  'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'NULLIF',
+  'CAST', 'ROUND', 'DATE', 'NOW', 'CURRENT', 'TRUE', 'FALSE',
+  'ALL', 'DISTINCT', 'ANY', 'TABLE', 'INDEX', 'SCHEMA', 'DATABASE',
+  'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'TRUNCATE',
+]);
+
+function extractColumnRefsFromSQL(sql: string): Array<{ schema?: string; table: string; column: string }> {
+  const refs: Array<{ schema?: string; table: string; column: string }> = [];
+  const pattern = /\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+  let match;
+  while ((match = pattern.exec(sql)) !== null) {
+    if (!SQL_KEYWORDS.has(match[2].toUpperCase())) {
+      refs.push({ schema: match[1], table: match[2], column: match[3] });
+    }
+  }
+  return refs;
+}
+
+/**
+ * Standard Levenshtein edit distance — O(mn) time, O(min(m,n)) space.
+ */
+function levenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  // Use two rows instead of full matrix for memory efficiency
+  let prevRow: number[] = [];
+  for (let j = 0; j <= b.length; j++) prevRow[j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    const currRow: number[] = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      currRow[j] = Math.min(
+        prevRow[j] + 1,      // deletion
+        currRow[j - 1] + 1, // insertion
+        prevRow[j - 1] + cost // substitution
+      );
+    }
+    prevRow = currRow;
+  }
+  return prevRow[b.length];
+}
+
+/**
+ * Find a fuzzy match for a column name among candidates.
+ * Returns the matched column name, or null if no good match found.
+ */
+function findFuzzyMatch(
+  columnName: string,
+  candidates: string[],
+): string | null {
+  const colLower = columnName.toLowerCase();
+  const MAX_DISTANCE = 2;
+
+  // 1. Exact (case-insensitive) — handled by validateColumns already, skip
+  // 2. Levenshtein match
+  let bestMatch: string | null = null;
+  let bestDist = Infinity;
+
+  for (const candidate of candidates) {
+    const canLower = candidate.toLowerCase();
+
+    // Levenshtein distance check
+    const dist = levenshteinDistance(colLower, canLower);
+    if (dist <= MAX_DISTANCE && dist < bestDist) {
+      bestDist = dist;
+      bestMatch = candidate;
+    }
+
+    // Prefix match bonus: "customer_id" ↔ "cust_id"
+    if (colLower.length >= 4 && canLower.length >= 4) {
+      if (colLower.startsWith(canLower.slice(0, 4)) || canLower.startsWith(colLower.slice(0, 4))) {
+        if (bestDist > 0) { bestDist = 0; bestMatch = candidate; }
+      }
+    }
+  }
+
+  return bestMatch;
+}
+
+/**
+ * Validate column references against schema before DB execution.
+ * Returns { valid: true, fixedSql?: string } if valid.
+ * Returns { valid: false, error: string } if cannot fix.
+ * Uses fuzzy matching to auto-correct column typos before calling LLM.
+ */
+function validateColumns(
+  sql: string,
+  schemaJson: { columns: Array<{ table_schema: string; table_name: string; column_name: string }> },
+): string | null {
+  const refs = extractColumnRefsFromSQL(sql);
+  if (!refs.length) return null;
+
+  // Build lookup: table → set of valid column names (lowercase)
+  const tableColumns = new Map<string, Set<string>>();
+  for (const col of schemaJson.columns) {
+    const key = `${col.table_schema}.${col.table_name}`;
+    if (!tableColumns.has(key)) tableColumns.set(key, new Set());
+    tableColumns.get(key)!.add(col.column_name.toLowerCase());
+  }
+
+  // Build flat list for fuzzy matching
+  const flatColumns: string[] = [];
+  for (const [, cols] of tableColumns) {
+    for (const c of cols) flatColumns.push(c);
+  }
+
+  let fixedSql = sql;
+  let hasChange = false;
+
+  for (const ref of refs) {
+    const tableKey = ref.schema
+      ? `${ref.schema}.${ref.table}`.toLowerCase()
+      : ref.table.toLowerCase();
+    const candidates = tableColumns.get(tableKey);
+
+    if (!candidates) {
+      // Table doesn't exist in schema at all — let LLM handle it
+      continue;
+    }
+
+    if (candidates.has(ref.column.toLowerCase())) {
+      continue; // exact match — OK
+    }
+
+    // Try fuzzy match
+    const fuzzyFound = findFuzzyMatch(ref.column, [...candidates]);
+    if (fuzzyFound) {
+      // Replace column name in SQL
+      const escaped = ref.column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`\\b${escaped}\\b`, 'gi');
+      fixedSql = fixedSql.replace(pattern, fuzzyFound);
+      hasChange = true;
+      console.log(`[FUZZY] '${ref.column}' → '${fuzzyFound}' in table '${ref.table}'`);
+    } else {
+      // Truly invalid column — LLM fix needed
+      const suggestion = [...candidates].slice(0, 3).join(', ');
+      return `Column '${ref.column}' in '${ref.table}' does not exist in schema. Did you mean: ${suggestion}?`;
+    }
+  }
+
+  if (hasChange) return null; // fixed — no error
+  return null;
+}
+
+// ── LIMIT Guardrail ───────────────────────────────────────────────────────────
+
+/**
+ * Auto-inject LIMIT clause if SQL doesn't already have one.
+ * Handles CTE (WITH ...) queries by appending LIMIT to final SELECT.
+ */
+function injectLimit(sql: string, limit: number): string {
+  const trimmed = sql.trim();
+  if (!trimmed) return sql;
+
+  // Skip if already has LIMIT
+  if (/\bLIMIT\b/i.test(trimmed)) return sql;
+
+  // Handle CTE: WITH ... SELECT ... → add LIMIT to the last SELECT
+  if (trimmed.toUpperCase().startsWith('WITH')) {
+    const lastSelectIdx = trimmed.toUpperCase().lastIndexOf('SELECT');
+    if (lastSelectIdx === -1) return sql;
+
+    // Find end of final SELECT: semicolon or end of string
+    const semiIdx = trimmed.lastIndexOf(';');
+    const endIdx = semiIdx > lastSelectIdx ? semiIdx : trimmed.length;
+    const endChar = trimmed.endsWith(';') ? ';' : '';
+
+    const before = trimmed.slice(0, lastSelectIdx);
+    const finalSelect = trimmed.slice(lastSelectIdx, endIdx);
+    return before + finalSelect + ` LIMIT ${limit}` + endChar;
+  }
+
+  // Simple case: append LIMIT before semicolon
+  if (trimmed.endsWith(';')) {
+    return trimmed.slice(0, -1) + ` LIMIT ${limit};`;
+  }
+  return trimmed + ` LIMIT ${limit}`;
+}
+
+// ── attemptSqlWithRetry ────────────────────────────────────────────────────────
+
 interface SqlRetryResult {
   success: boolean;
   sql?: string;
@@ -642,57 +911,114 @@ interface SqlRetryResult {
   sqlResult?: {
     columns: string[]; rows: Record<string, unknown>[];
     rowCount: number; duration_ms: number; limited: boolean;
+    truncated?: boolean;
+    totalRows?: number;
   };
 }
 
+/**
+ * Execute SQL with up to maxRetries LLM-assisted fixes for DATABASE errors.
+ * Step 0: LIMIT guardrail — auto-inject LIMIT if missing
+ * Step 1: validateColumns pre-check
+ * Step 2: try execute
+ * Step 3: if DATABASE error -> buildFixPrompt -> LLM -> validate -> execute
+ * Step 4: repeat up to maxRetries
+ * Step 5: post-check — truncate large results
+ */
 async function attemptSqlWithRetry(
   pool: Pool,
-  initialSql: string,
-  systemPrompt: string,
+  sql: string,
+  ddlText: string,
   chatModel: BaseChatModel,
-  maxRetries = 2,
+  maxRetries: number,
   _userId: number,
-  _connectionId: number,
+  _connId: number,
+  userQuestion: string,
+  schemaJson?: { columns: Array<{ table_schema: string; table_name: string; column_name: string }> },
 ): Promise<SqlRetryResult> {
-  let sql = initialSql;
-  console.log('systemPrompt', systemPrompt);
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const validation = validateSQL(sql);
+  // ── LIMIT GUARDRAIL: auto-inject LIMIT if missing ──
+  const MAX_QUERY_ROWS = parseInt(process.env.MAX_QUERY_ROWS ?? '1000');
+  const SOFT_LIMIT_ROWS = parseInt(process.env.SOFT_LIMIT_ROWS ?? '5000');
 
-    if (!validation.valid) {
-      if (attempt < maxRetries) {
-        const fixPrompt = `Lỗi SQL: ${validation.error}\nSQL hiện tại: ${sql}\nHãy sửa SQL và trả về JSON.`;
-        const msgs: (HumanMessage | SystemMessage)[] = [
-          new SystemMessage({ content: systemPrompt }),
-          new HumanMessage({ content: fixPrompt }),
-        ];
-        const response = await chatModel.invoke(msgs);
+  let currentSql = sql;
+  if (!/\bLIMIT\b/i.test(currentSql.trim())) {
+    currentSql = injectLimit(currentSql, MAX_QUERY_ROWS);
+    console.log(`[LIMIT GUARDRAIL] Auto-added LIMIT ${MAX_QUERY_ROWS}`);
+  }
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // ── Pre-execution column validation ──
+    if (schemaJson && schemaJson.columns.length > 0) {
+      const colError = validateColumns(currentSql, schemaJson);
+      if (colError) {
+        if (attempt === maxRetries) {
+          return { success: false, sql: currentSql, error: colError };
+        }
+        // Ask LLM to fix
+        const fixPrompt = buildFixPrompt('COLUMN', colError, currentSql, ddlText, userQuestion, schemaJson);
+        const response = await chatModel.invoke([new HumanMessage({ content: fixPrompt })]);
         const content = typeof response === 'string' ? response : (response as { content?: string }).content ?? '';
-        const parsed = await parseAIResponse(content as string);
-        if (parsed.sql && parsed.sql !== sql) { sql = parsed.sql; continue; }
+        const fixedSql = (content.match(/\[sql\]([\s\S]*?)\[\/sql\]/i)?.[1] ?? content.match(/\b(SELECT[\s\S]+?;?)\b/i)?.[0])?.replace(/;$/, '');
+        if (fixedSql && fixedSql !== currentSql) {
+          currentSql = fixedSql;
+          continue;
+        }
+        return { success: false, sql: currentSql, error: colError };
       }
-      return { success: false, error: validation.error ?? 'Invalid SQL', sql };
     }
 
+    // ── Try execute ──
     try {
-      const result = await executeQueryOnPool(pool, validation.sql!);
-      return { success: true, sql: validation.sql, sqlResult: result };
-    } catch (execErr) {
-      if (attempt < maxRetries) {
-        const fixPrompt = `Lỗi khi chạy SQL: ${execErr}\nSQL: ${validation.sql}\nHãy sửa SQL và trả về JSON.`;
-        const msgs: (HumanMessage | SystemMessage)[] = [
-          new SystemMessage({ content: systemPrompt }),
-          new HumanMessage({ content: fixPrompt }),
-        ];
-        const response = await chatModel.invoke(msgs);
-        const content = typeof response === 'string' ? response : (response as { content?: string }).content ?? '';
-        const parsed = await parseAIResponse(content as string);
-        if (parsed.sql && parsed.sql !== sql) { sql = parsed.sql; continue; }
+      const result = await executeQueryOnPool(pool, currentSql);
+
+      // ── POST-CHECK: handle large result sets ──
+      if (result.rowCount > SOFT_LIMIT_ROWS) {
+        console.log(`[LIMIT GUARDRAIL] Result truncated: ${result.rowCount} > ${SOFT_LIMIT_ROWS}`);
+        return {
+          success: true,
+          sql: currentSql,
+          sqlResult: {
+            ...result,
+            rows: result.rows.slice(0, 100),
+            limited: true,
+            truncated: true,
+            totalRows: result.rowCount,
+          },
+        };
       }
-      return { success: false, error: String(execErr), sql: validation.sql };
+
+      return { success: true, sql: currentSql, sqlResult: result };
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      // Not a retryable DATABASE error
+      if (!errorMsg.includes('does not exist') && !errorMsg.includes('syntax error at')) {
+        return { success: false, sql: currentSql, error: errorMsg };
+      }
+
+      // Last attempt — give up
+      if (attempt === maxRetries) {
+        return { success: false, sql: currentSql, error: errorMsg };
+      }
+
+      // Ask LLM to fix
+      const fixPrompt = buildFixPrompt('DATABASE', errorMsg, currentSql, ddlText, userQuestion, schemaJson);
+      const response = await chatModel.invoke([new HumanMessage({ content: fixPrompt })]);
+      const content = typeof response === 'string' ? response : (response as { content?: string }).content ?? '';
+
+      // Extract fixed SQL from response
+      const fixedSql = (content.match(/\[sql\]([\s\S]*?)\[\/sql\]/i)?.[1]
+        ?? content.match(/\b(SELECT[\s\S]+?;?)\b/i)?.[0])?.replace(/;$/, '');
+
+      if (!fixedSql || fixedSql === currentSql) {
+        return { success: false, sql: currentSql, error: `Loi: ${errorMsg}. LLM khong the sua duoc.` };
+      }
+
+      currentSql = fixedSql;
     }
   }
-  return { success: false, error: 'Max retries exceeded', sql };
+
+  return { success: false, sql: currentSql, error: 'Max retries exceeded' };
 }
 
 interface AIResponse {
@@ -708,26 +1034,166 @@ async function parseAIResponse(raw: string): Promise<AIResponse> {
   const sqlMatch = raw.match(/\[sql\]([\s\S]*?)\[\/sql\]/i);
   const sql = sqlMatch ? sqlMatch[1].trim().replace(/;$/, '') : null;
 
-  // 2. Try to parse JSON part (everything after [/sql] if present)
-  const jsonCandidate = sqlMatch ? raw.slice(raw.lastIndexOf('[/sql]') + 6).trim() : raw.trim();
+  // 2. Build narrative = everything BEFORE [sql] + everything AFTER [/sql]
+  //    This ensures msg.content never contains SQL tags
+  let narrativeBefore = '';
+  let narrativeAfter = '';
 
-  if (jsonCandidate.startsWith('{') || jsonCandidate.startsWith('[')) {
-    try {
-      const parsed = JSON.parse(jsonCandidate.replace(/^```json\s*/i, '').replace(/```$/i, ''));
-      return { ...parsed, sql: sql ?? parsed.sql };
-    } catch {
-      // JSON parse failed — return SQL only if found
+  if (sqlMatch) {
+    narrativeBefore = raw.slice(0, sqlMatch.index).trim();
+    const sqlEndIndex = raw.lastIndexOf('[/sql]');
+    narrativeAfter = raw.slice(sqlEndIndex + 6).trim();
+  }
+
+  // 3. Try to parse JSON at the end (LLM writes SQL first, then JSON)
+  //    We strip everything before the first { so JSON parse works reliably
+  let remainingText = '';
+  if (sqlMatch) {
+    const sqlEndIndex = raw.lastIndexOf('[/sql]');
+    remainingText = raw.slice(sqlEndIndex + 6).trim();
+  } else {
+    // No [sql] tags — maybe LLM wrote plain SELECT; try to strip SQL from response
+    const selectIdx = raw.toUpperCase().indexOf('SELECT');
+    if (selectIdx !== -1) {
+      const semiIdx = raw.lastIndexOf(';');
+      remainingText = raw.slice(0, selectIdx).trim() + ' ' +
+        (semiIdx > selectIdx ? raw.slice(semiIdx + 1) : '').trim();
+    } else {
+      remainingText = raw.trim();
     }
   }
 
-  // 3. Fallback: return SQL if found, otherwise treat whole thing as answer
+  // Try JSON — strip markdown code fences
+  const jsonCandidate = remainingText.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+  if (jsonCandidate.startsWith('{') || jsonCandidate.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(jsonCandidate);
+      // Use LLM's own analysis if present and non-empty
+      const analysis = parsed.analysis && parsed.analysis.length > 10 ? parsed.analysis : '';
+      return { ...parsed, sql: sql ?? parsed.sql, analysis };
+    } catch {
+      // Fall through — use remainingText as narrative
+    }
+  }
+
+  // 3. Combine narrative before + after, filter out SQL-like tokens
+  const combinedNarrative = [narrativeBefore, narrativeAfter]
+    .filter(Boolean)
+    .join('\n')
+    .replace(/^```json\s*/i, '')
+    .replace(/```$/i, '')
+    .replace(/^\{/, '')
+    .replace(/^\[/, '')
+    .trim();
+
+  // Strip any remaining SQL tokens (like "SELECT", "FROM", etc.) from narrative
+  const isNonTrivialNarrative = (text: string) =>
+    text.length > 10
+    && !text.toUpperCase().startsWith('SELECT')
+    && !text.startsWith('{')
+    && !text.startsWith('[')
+    && !text.toUpperCase().startsWith('FROM')
+    && !text.toUpperCase().startsWith('WHERE');
+
+  const finalNarrative = isNonTrivialNarrative(combinedNarrative)
+    ? combinedNarrative
+    : narrativeAfter;
+
   if (sql) {
-    return { type: 'answer', sql };
+    return { type: 'answer', sql, analysis: finalNarrative || undefined };
   }
   return { type: 'answer', analysis: raw };
 }
 
 const VALID_CHART_TYPES = ['bar', 'line', 'pie', 'area', 'scatter'];
+
+/**
+ * Build a friendly, human-readable response instead of raw SQL.
+ * Fully generic — no hardcoded table/column names.
+ */
+function buildFriendlyResponse(
+  userMessage: string,
+  sqlResult: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number } | null,
+  sqlError: string | null,
+  _selectedTables: SelectedTable[],
+): string {
+  // ── Greeting ──
+  const greetingTriggers = ['xin chào', 'chào', 'hi', 'hello', 'hey', 'alo', 'tôi là'];
+  const isGreeting = greetingTriggers.some(g => userMessage.toLowerCase().includes(g))
+    && userMessage.length < 40;
+  if (isGreeting) {
+    return 'Xin chào! 👋 Tôi là trợ lý AI phân tích dữ liệu. Bạn cần hỗ trợ gì hôm nay?';
+  }
+
+  // ── Error ──
+  if (sqlError) {
+    return `😕 Có lỗi xảy ra khi chạy SQL: *${sqlError}*. Bạn thử diễn đạt lại câu hỏi nhé!`;
+  }
+
+  // ── No result ──
+  if (!sqlResult || sqlResult.rowCount === 0) {
+    // Return user-friendly message with diagnostic hints
+    return '😕 Không có kết quả phù hợp.\n\nGợi ý: Có thể do:\n• Bộ lọc quá ngặt (ngày/tháng không đúng)\n• Dữ liệu chưa được nhập vào hệ thống\n• Tên bảng/cột không chính xác\n\nThử điều chỉnh lại câu hỏi nhé!';
+  }
+
+  const { columns, rows, rowCount } = sqlResult;
+  const col0 = columns[0] ?? '';
+  const col1 = columns[1] ?? columns[columns.length - 1] ?? '';
+
+  // ── Single aggregate value (count, sum, avg...) ──
+  const isAggregateOnly = columns.length <= 2 && rows.length === 1
+    && columns.some(c => /count|sum|avg|total|min|max|so_luong|tong|dem/i.test(c));
+  if (isAggregateOnly) {
+    const val = rows[0][col1] ?? rows[0][col0];
+    if (val !== undefined && val !== null) {
+      const num = Number(val);
+      return isNaN(num)
+        ? `✅ Kết quả: **${val}**. Bạn cần tôi phân tích thêm không?`
+        : `✅ Kết quả: **${num.toLocaleString('vi-VN')}**. Bạn cần tôi phân tích thêm không?`;
+    }
+  }
+
+  // ── Generic table with numeric second column → show sorted top + total ──
+  const numIdx = columns.findIndex(c => /area|dt|dien_tich|so_luong|amount|value|sum|count/i.test(c));
+  const nameIdx = columns.findIndex(c =>
+    /name|tên|ten_|label|district|commune|province|huyen|xa|city|user|camera|fire|weather/i.test(c)
+    && c !== columns[numIdx ?? -1]
+  );
+
+  if (numIdx !== -1 && nameIdx !== -1 && rows.length <= 20) {
+    const numCol = columns[numIdx];
+    const nameCol = columns[nameIdx];
+    const sorted = [...rows].sort((a, b) => {
+      const va = Number((a as Record<string, string>)[numCol]);
+      const vb = Number((b as Record<string, string>)[numCol]);
+      return isNaN(va) ? 1 : isNaN(vb) ? -1 : vb - va;
+    });
+    const top = sorted[0] as Record<string, string>;
+    const total = sorted.reduce((s, r) => {
+      const v = Number((r as Record<string, string>)[numCol]);
+      return s + (isNaN(v) ? 0 : v);
+    }, 0);
+    const topName = top[nameCol] ?? '(unknown)';
+    const topVal = Number(top[numCol]).toLocaleString('vi-VN');
+
+    const lines = sorted.slice(0, 10).map((r, i) => {
+      const row = r as Record<string, string>;
+      const name = row[nameCol] ?? '';
+      const val = Number(row[numCol]).toLocaleString('vi-VN');
+      return `${i + 1}. **${name}** — ${val}`;
+    });
+
+    const totalLine = rows.length > 1 && total > 0
+      ? `\n📍 Giá trị cao nhất: **${topName}** (${topVal}). Tổng cộng: **${Math.round(total).toLocaleString('vi-VN')}**.`
+      : '';
+
+    return `📊 Kết quả (${rowCount} dòng):\n\n${lines.join('\n')}${totalLine}`;
+  }
+
+  // ── Default ──
+  return `✅ Đã truy vấn thành công! Trả về **${rowCount} dòng** dữ liệu.\n\n`
+    + `Bạn có muốn tôi phân tích thêm, xuất biểu đồ, hoặc hỏi thêm thông tin gì không?`;
+}
 
 function resolveChartType(
   aiChartType: string | undefined,
@@ -836,6 +1302,43 @@ chatRouter.get('/models', async (req: AuthRequest, res) => {
     res.json({ models, provider });
   } catch (err) {
     console.error(`[GET /models] ERROR:`, err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/chat/explain-plan — show PostgreSQL execution plan
+chatRouter.post('/explain-plan', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { sql, connectionId } = req.body as { sql?: string; connectionId?: number };
+    if (!sql || !connectionId) {
+      res.status(400).json({ error: 'sql and connectionId are required' });
+      return;
+    }
+
+    const validation = validateSQL(sql);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+
+    const connection = await getConnectionDetails(req.userId!, connectionId);
+    if (!connection) {
+      res.status(404).json({ error: 'Connection not found' });
+      return;
+    }
+
+    const connStr = `postgresql://${connection.db_user}:${connection.db_password}@${connection.db_host}:${connection.db_port}/${connection.db_name}`;
+    const pool = await createConnectionPool(connStr);
+    try {
+      const result = await pool.query(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${sql}`
+      );
+      res.json({ plan: result.rows.map(r => r['QUERY PLAN']).join('\n') });
+    } finally {
+      await pool.end();
+    }
+  } catch (err) {
+    console.error('[explain-plan]', err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -967,9 +1470,15 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
       );
 
       executedSql = generationResult.sql;
-      console.log(`[sql-generator] SQL generated (RAG: ${generationResult.ragExamplesUsed}, Docs: ${generationResult.docsUsed})`);
+      console.log(`[sql-generator] SQL generated (RAG: ${generationResult.ragExamplesUsed}, Docs: ${generationResult.docsUsed}, Reviews: ${generationResult.reviewAttempts})`);
+      if (generationResult.reviewResult) {
+        console.log(`[sql-generator] Review: isValid=${generationResult.reviewResult.isValid}, confidence=${generationResult.reviewResult.confidence}`);
+        if (generationResult.reviewResult.issues.length > 0) {
+          console.log(`[sql-generator] Review issues:`, generationResult.reviewResult.issues);
+        }
+      }
 
-      // Use concentrated system prompt for retry logic
+      // Build concentrated system prompt for SQL execution/retry
       const focusedDDL = selectedTables.map(t =>
         `${t.schema}.${t.table}: ${t.reason}`
       ).join(', ');
@@ -984,19 +1493,21 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
         '',
       );
 
-      // Parse the generated SQL (Chef already returned structured output)
-      const parsed = await parseAIResponse(generationResult.sql);
+      // Parse the RAW response to extract SQL + narrative (before SQL tag + after [/sql] tag)
+      const parsed = await parseAIResponse(generationResult.rawResponse ?? generationResult.sql);
       finalType = parsed.type ?? 'table';
       finalAnalysis = parsed.analysis ?? generationResult.explanation;
       initialChartType = parsed.chartType;
 
       if (parsed.sql || generationResult.sql) {
+        // Use the raw-response-parsed SQL (has narrative), fallback to generationResult.sql
+        executedSql = parsed.sql || generationResult.sql;
         const execPool = await createConnectionPool(connectionString);
         try {
           const retryResult = await attemptSqlWithRetry(
             execPool,
             parsed.sql ?? generationResult.sql ?? '',
-            systemPrompt,
+            focusedSchema,
             createChatModel(
               keyRecord.provider,
               keyRecord.api_key,
@@ -1005,6 +1516,8 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
             2,
             req.userId!,
             connection.id,
+            message,
+            enrichedSchema,
           );
 
           if (retryResult.success && retryResult.sqlResult) {
@@ -1032,7 +1545,9 @@ chatRouter.post('/', async (req: AuthRequest, res) => {
       return;
     }
 
-    const assistantContent = finalAnalysis ?? (sqlResult ? `Returned ${sqlResult.rowCount} rows.` : 'Done.');
+    const assistantContent = (finalAnalysis && finalAnalysis.length > 10)
+      ? finalAnalysis
+      : buildFriendlyResponse(message, sqlResult, sqlError, selectedTables);
 
     // ── Save messages to DB (non-blocking) ──
     saveChatMessages(
@@ -1137,22 +1652,89 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
       res.end(); cleanup(); return;
     }
 
+    // ── Step 0: Semantic Cache Check ──
+    const connStr = `postgresql://${connection.db_user}:${connection.db_password}@${connection.db_host}:${connection.db_port}/${connection.db_name}`;
+    let questionVec: number[] = [];
+    try {
+      questionVec = await embedText(message, keyRecord.api_key);
+      const cacheResult = await checkSemanticCache(message, questionVec, connection.id, userId);
+
+      if (cacheResult.hit && cacheResult.entry) {
+        sendSSE(res, 'thinking', { message: 'Tìm thấy trong cache...' });
+        // Re-execute cached SQL on fresh DB to get up-to-date data
+        const freshPool = await createConnectionPool(connStr);
+        try {
+          const { executeSafeQuery } = await import('../utils/sqlValidator');
+          const fresh = await executeSafeQuery(freshPool, cacheResult.entry.sql_query, 30_000);
+          const masked = await applyDataMasking(
+            fresh.rows as Record<string, unknown>[],
+            fresh.columns as string[],
+            connection.id
+          );
+          sendSSE(res, 'result', {
+            columns: fresh.columns as string[],
+            rows: masked.rows,
+            rowCount: fresh.rowCount ?? 0,
+            duration_ms: fresh.duration_ms,
+            fromCache: true,
+            maskedColumns: masked.maskedColumns,
+          });
+        } finally {
+          await freshPool.end();
+        }
+        sendSSE(res, 'done', {});
+        res.end();
+        cleanup();
+        return;
+      }
+
+      if (cacheResult.partial && cacheResult.entry) {
+        sendSSE(res, 'thinking', {
+          message: `Tìm thấy SQL tương tự (${(cacheResult.entry.similarity * 100).toFixed(0)}%), đang kiểm tra...`
+        });
+      }
+    } catch (cacheErr) {
+      console.warn('[semantic-cache] check failed, continuing:', cacheErr);
+    }
+
     sendSSE(res, 'status', { message: 'Retrieving relevant tables...' });
 
     // Always create pool early (needed for attemptSqlWithRetry regardless of table retrieval result)
-    const connStr = `postgresql://${connection.db_user}:${connection.db_password}@${connection.db_host}:${connection.db_port}/${connection.db_name}`;
     poolRef = await createConnectionPool(connStr);
 
-    // ── Phase 1: Table Retrieval — Top 20 tables via vector search ──
-    const topTables = await retrieveTopTables(message, connection.id, keyRecord.api_key, 20, 0.15);
-    sendSSE(res, 'status', {
-      message: topTables.length
-        ? `Top ${topTables.length} tables: ${topTables.map(t => `${t.table_schema}.${t.table_name}`).join(', ')}`
-        : 'No table summaries found, falling back to full schema...'
-    });
+    // ── Phase 1: Table Retrieval — Top 20 via vector, then LLM rerank to Top 5-7 ──
+    const candidates = await retrieveTopTables(message, connection.id, keyRecord.api_key, 20, 0.15);
+
+    let topTables = candidates;
+    if (candidates.length > 5) {
+      sendSSE(res, 'status', { message: `Tim thay ${candidates.length} bang, LLM dang loc chon...` });
+      try {
+        const reranked = await rerankTablesWithLLM(
+          candidates, message,
+          keyRecord.provider, keyRecord.api_key, model
+        );
+        topTables = candidates.filter(t =>
+          reranked.selectedTables.includes(`${t.table_schema}.${t.table_name}`)
+        );
+        sendSSE(res, 'status', {
+          message: `LLM chon ${topTables.length} bang: ${reranked.selectedTables.join(', ')}`
+        });
+      } catch (err) {
+        console.warn('[table-reranker] fallback to top-5:', err);
+        topTables = candidates.slice(0, 5);
+        sendSSE(res, 'status', { message: `Fallback: top ${topTables.length} bang` });
+      }
+    } else {
+      sendSSE(res, 'status', {
+        message: topTables.length
+          ? `Top ${topTables.length} tables: ${topTables.map(t => `${t.table_schema}.${t.table_name}`).join(', ')}`
+          : 'No table summaries found, falling back to full schema...'
+      });
+    }
 
     // ── Phase 2: DDL — only Top 5 tables' schema (with data types) ──
     let schemaDescription = '';
+    let enrichedSchema: EnrichedSchema = { columns: [], foreignKeys: [] };
     if (topTables.length > 0) {
       // Fetch DDL with column types from snapshot
       // Include FK target tables too (they might not be in topTables)
@@ -1179,6 +1761,7 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
         columns: [...snapshot.columns, ...extraDdl.columns],
         foreignKeys: [...snapshot.foreignKeys, ...extraDdl.foreignKeys],
       };
+      enrichedSchema = ddl;
       const schemaLines: string[] = [];
       const schemas = [...new Set(topTables.map(t => t.table_schema))];
       schemaLines.push(`Cac SCHEMA: ${schemas.join(', ')}`);
@@ -1206,12 +1789,28 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
         const cols = colsByTable[key] ?? [];
         for (const c of cols) {
           const desc = c.description ? ` — ${c.description}` : '';
-          // Cách 2: "Biển báo nguy hiểm" tự động cho cột _code/_id
           const isCodeCol = /_code$|_id$/.test(c.column_name);
           const codeWarning = isCodeCol ? ' ⚠️ MÃ ĐỊNH DANH - KHÔNG lọc tên tiếng Việt ở đây. PHẢI JOIN bảng danh mục.' : '';
           schemaLines.push(`  - ${c.column_name} (${c.data_type})${desc}${codeWarning}`);
         }
         if (t.summary_text) schemaLines.push(`  Mo ta: ${t.summary_text}`);
+        schemaLines.push('');
+      }
+      // Also include FK-target tables that are NOT in topTables (e.g. core.commune from district FK)
+      for (const extraKey of extraTables) {
+        const [s, n] = extraKey.split('.');
+        schemaLines.push(`${s}.${n}:`);
+        const fks = fksByTable[extraKey] ?? [];
+        for (const fk of fks) {
+          schemaLines.push(`  FK: ${fk.column_name} → ${fk.foreign_table_schema}.${fk.foreign_table_name}.${fk.foreign_column_name}`);
+        }
+        const cols = colsByTable[extraKey] ?? [];
+        for (const c of cols) {
+          const desc = c.description ? ` — ${c.description}` : '';
+          const isCodeCol = /_code$|_id$/.test(c.column_name);
+          const codeWarning = isCodeCol ? ' ⚠️ MÃ ĐỊNH DANH - KHÔNG lọc tên tiếng Việt ở đây. PHẢI JOIN bảng danh mục.' : '';
+          schemaLines.push(`  - ${c.column_name} (${c.data_type})${desc}${codeWarning}`);
+        }
         schemaLines.push('');
       }
       schemaDescription = schemaLines.join('\n');
@@ -1220,17 +1819,18 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
       await poolRef.end();
       poolRef = await createConnectionPool(connStr);
       const cacheKey = `${connection.id}:${connection.db_host}:${connection.db_name}`;
-      let enrichedSchema = getCachedSchema(cacheKey);
-      if (!enrichedSchema) {
+      let es = getCachedSchema(cacheKey);
+      if (!es) {
         const cached = await getCachedSchemaWithText(connection.id, message);
-        if (cached) { enrichedSchema = cached.schema; setCachedSchema(cacheKey, enrichedSchema); }
+        if (cached) { es = cached.schema; setCachedSchema(cacheKey, es); }
       }
-      if (!enrichedSchema) {
-        enrichedSchema = await fetchSchema(poolRef);
-        setCachedSchema(cacheKey, enrichedSchema);
-        saveSchemaSnapshot(connection.id, enrichedSchema, buildSchemaTextFromEnriched(enrichedSchema, message))
+      if (!es) {
+        es = await fetchSchema(poolRef);
+        setCachedSchema(cacheKey, es);
+        saveSchemaSnapshot(connection.id, es, buildSchemaTextFromEnriched(es, message))
           .catch(err => console.warn('[schema-store] save failed:', err));
       }
+      enrichedSchema = es;
       const schemaIndex = getOrBuildIndex(connection.id, enrichedSchema);
       const relevantTables = await searchSchema(schemaIndex, message, 8);
       schemaDescription = buildFocusedSchemaDescription(relevantTables, schemaIndex.tables, message);
@@ -1311,7 +1911,11 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
     const parsed = await parseAIResponse(cleanResponse);
 
     // ── Step 4: Execute SQL with retry on the SAME pool ──
-    let sqlExecResult: Awaited<ReturnType<typeof executeQueryOnPool>> | null = null;
+    let sqlExecResult: {
+      columns: string[]; rows: Record<string, unknown>[];
+      rowCount: number; duration_ms: number; limited: boolean;
+      truncated?: boolean; totalRows?: number;
+    } | null = null;
     let sqlExecError: string | null = null;
     let executedSql: string | null = null;
 
@@ -1321,21 +1925,33 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
       const retryResult = await attemptSqlWithRetry(
         poolRef,
         parsed.sql,
-        systemPrompt,
+        schemaDescription,
         chatModel,
         2,
         userId,
         connection.id,
+        message,
+        enrichedSchema,
       );
 
       if (retryResult.success && retryResult.sqlResult) {
         sqlExecResult = retryResult.sqlResult;
         executedSql = retryResult.sql ?? parsed.sql ?? null;
+        const resultData = sqlExecResult as {
+          columns: string[]; rows: Record<string, unknown>[];
+          rowCount: number; duration_ms: number; limited: boolean;
+          truncated?: boolean; totalRows?: number;
+        };
+        // Apply data masking for sensitive columns
+        const masked = await applyDataMasking(resultData.rows, resultData.columns, connection.id);
         sendSSE(res, 'result', {
-          columns: sqlExecResult.columns,
-          rows: sqlExecResult.rows,
-          rowCount: sqlExecResult.rowCount,
-          duration_ms: sqlExecResult.duration_ms,
+          columns: resultData.columns,
+          rows: masked.rows,
+          rowCount: resultData.rowCount,
+          duration_ms: resultData.duration_ms,
+          truncated: resultData.truncated ?? false,
+          totalRows: resultData.totalRows ?? resultData.rowCount,
+          maskedColumns: masked.maskedColumns,
         });
       } else {
         sqlExecError = retryResult.error ?? 'SQL execution failed';
@@ -1367,7 +1983,8 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
 
     // ── Save messages to DB (non-blocking) ──
     const assistantContent = streamedAnalysis
-      || (sqlExecResult ? `Returned ${sqlExecResult.rowCount} rows.` : 'Done.');
+      || ((parsed.analysis && parsed.analysis.length > 10) ? parsed.analysis : '')
+      || buildFriendlyResponse(message, sqlExecResult, sqlExecError, []);
     saveChatMessages(
       userId, resolvedSessionId,
       message, assistantContent,
@@ -1375,6 +1992,16 @@ chatRouter.get('/stream', async (req: AuthRequest, res) => {
       sqlExecResult ? { columns: sqlExecResult.columns, rows: sqlExecResult.rows, rowCount: sqlExecResult.rowCount } : null,
       sqlExecError
     ).catch(err => console.error('[saveChatMessages]', err));
+
+    // ── Save to Semantic Cache ──
+    if (sqlExecResult && questionVec.length > 0) {
+      saveSemanticCache(
+        connection.id, userId, message,
+        questionVec,
+        executedSql ?? parsed.sql ?? '',
+        { columns: sqlExecResult.columns, rows: sqlExecResult.rows, rowCount: sqlExecResult.rowCount }
+      ).catch(err => console.warn('[semantic-cache] save failed:', err));
+    }
 
     sendSSE(res, 'done', {});
     res.end();
